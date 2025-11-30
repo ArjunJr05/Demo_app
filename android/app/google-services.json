@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "408592089006",
+    "project_id": "salesiq-47533",
+    "storage_bucket": "salesiq-47533.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:408592089006:android:98ef4e5fb918931a97523f",
+        "android_client_info": {
+          "package_name": "com.example.salesiq"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "408592089006-lg0l0ldqv5ajcoi0nb6772ueo3bta0iu.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.salesiq",
+            "certificate_hash": "c8555b01203a034ab2c541ae16233931ce35048b"
+          }
+        },
+        {
+          "client_id": "408592089006-brpkvkjpg4qsqcq98c2m3bppjqs70e8h.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBmokioyIUugGTLyOZCr3zLvngL-UqGrL4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "408592089006-brpkvkjpg4qsqcq98c2m3bppjqs70e8h.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
