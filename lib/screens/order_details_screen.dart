@@ -1,6 +1,10 @@
 // 📦 Modern Order Details Screen
 import 'package:flutter/material.dart';
+import 'package:salesiq_mobilisten/salesiq_mobilisten.dart';
 import '../models/order.dart';
+import '../widgets/cancel_return_form.dart';
+import '../services/ecommerce_service.dart';
+import '../services/customer_timeline_service.dart';
 
 class OrderDetailsScreen extends StatefulWidget {
   final Order order;
@@ -18,10 +22,12 @@ class _OrderDetailsScreenState extends State<OrderDetailsScreen>
     with TickerProviderStateMixin {
   late AnimationController _animationController;
   late Animation<double> _fadeAnimation;
+  Order? _currentOrder;
 
   @override
   void initState() {
     super.initState();
+    _currentOrder = widget.order;
     _animationController = AnimationController(
       duration: Duration(milliseconds: 800),
       vsync: this,
@@ -103,11 +109,11 @@ class _OrderDetailsScreenState extends State<OrderDetailsScreen>
                       Container(
                         padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                         decoration: BoxDecoration(
-                          color: _getStatusColor(widget.order.status),
+                          color: _getStatusColor(_currentOrder?.status ?? widget.order.status),
                           borderRadius: BorderRadius.circular(20),
                         ),
                         child: Text(
-                          widget.order.statusText,
+                          _currentOrder?.statusText ?? widget.order.statusText,
                           style: TextStyle(
                             color: Colors.white,
                             fontWeight: FontWeight.w600,
@@ -153,6 +159,10 @@ class _OrderDetailsScreenState extends State<OrderDetailsScreen>
 
                           // Order Timeline
                           _buildOrderTimeline(screenWidth, isTablet),
+                          SizedBox(height: 20),
+                          
+                          // Contextual Action Button
+                          _buildContextualActionButton(screenWidth, isTablet),
                           SizedBox(height: 100), // Bottom padding
                         ],
                       ),
@@ -185,9 +195,13 @@ class _OrderDetailsScreenState extends State<OrderDetailsScreen>
               ),
             ),
             FloatingActionButton.extended(
-              onPressed: () {
-                // Contact support
-                _showSupportDialog();
+              onPressed: () async {
+                // Contact support with SalesIQ integration
+                await CustomerTimelineService.trackChatInteraction(
+                  _currentOrder?.customerEmail ?? widget.order.customerEmail, 
+                  0
+                );
+                ZohoSalesIQ.present();
               },
               backgroundColor: Colors.green,
               foregroundColor: Colors.white,
@@ -235,11 +249,11 @@ class _OrderDetailsScreenState extends State<OrderDetailsScreen>
               Container(
                 padding: EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                 decoration: BoxDecoration(
-                  color: _getPaymentStatusColor(widget.order.paymentStatus),
+                  color: _getPaymentStatusColor(_currentOrder?.paymentStatus ?? widget.order.paymentStatus),
                   borderRadius: BorderRadius.circular(15),
                 ),
                 child: Text(
-                  widget.order.paymentStatusText,
+                  _currentOrder?.paymentStatusText ?? widget.order.paymentStatusText,
                   style: TextStyle(
                     color: Colors.white,
                     fontWeight: FontWeight.w600,
@@ -250,12 +264,12 @@ class _OrderDetailsScreenState extends State<OrderDetailsScreen>
             ],
           ),
           SizedBox(height: 16),
-          _buildInfoRow('Order Date', _formatDate(widget.order.orderDate)),
-          _buildInfoRow('Customer', widget.order.customerName),
-          _buildInfoRow('Email', widget.order.customerEmail),
-          _buildInfoRow('Phone', widget.order.customerPhone),
-          if (widget.order.trackingNumber != null)
-            _buildInfoRow('Tracking', widget.order.trackingNumber!),
+          _buildInfoRow('Order Date', _formatDate(_currentOrder?.orderDate ?? widget.order.orderDate)),
+          _buildInfoRow('Customer', _currentOrder?.customerName ?? widget.order.customerName),
+          _buildInfoRow('Email', _currentOrder?.customerEmail ?? widget.order.customerEmail),
+          _buildInfoRow('Phone', _currentOrder?.customerPhone ?? widget.order.customerPhone),
+          if ((_currentOrder?.trackingNumber ?? widget.order.trackingNumber) != null)
+            _buildInfoRow('Tracking', _currentOrder?.trackingNumber ?? widget.order.trackingNumber!),
         ],
       ),
     );
@@ -279,7 +293,7 @@ class _OrderDetailsScreenState extends State<OrderDetailsScreen>
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            'Order Items (${widget.order.items.length})',
+            'Order Items (${_currentOrder?.items.length ?? widget.order.items.length})',
             style: TextStyle(
               fontSize: isTablet ? 18 : 16,
               fontWeight: FontWeight.bold,
@@ -287,7 +301,7 @@ class _OrderDetailsScreenState extends State<OrderDetailsScreen>
             ),
           ),
           SizedBox(height: 16),
-          ...widget.order.items.map((item) => _buildOrderItem(item, isTablet)),
+          ...(_currentOrder?.items ?? widget.order.items).map((item) => _buildOrderItem(item, isTablet)),
           Divider(height: 30),
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -301,7 +315,7 @@ class _OrderDetailsScreenState extends State<OrderDetailsScreen>
                 ),
               ),
               Text(
-                '₹${widget.order.totalAmount.toStringAsFixed(0)}',
+                '₹${_currentOrder?.totalAmount.toStringAsFixed(0) ?? widget.order.totalAmount.toStringAsFixed(0)}',
                 style: TextStyle(
                   fontSize: isTablet ? 20 : 18,
                   fontWeight: FontWeight.bold,
@@ -428,7 +442,7 @@ class _OrderDetailsScreenState extends State<OrderDetailsScreen>
                 SizedBox(width: 12),
                 Expanded(
                   child: Text(
-                    widget.order.shippingAddress,
+                    _currentOrder?.shippingAddress ?? widget.order.shippingAddress,
                     style: TextStyle(
                       fontSize: isTablet ? 14 : 13,
                       color: Colors.black87,
@@ -470,9 +484,9 @@ class _OrderDetailsScreenState extends State<OrderDetailsScreen>
             ),
           ),
           SizedBox(height: 16),
-          _buildInfoRow('Payment Method', widget.order.paymentMethod),
-          _buildInfoRow('Payment Status', widget.order.paymentStatusText),
-          _buildInfoRow('Total Paid', '₹${widget.order.totalAmount.toStringAsFixed(0)}'),
+          _buildInfoRow('Payment Method', _currentOrder?.paymentMethod ?? widget.order.paymentMethod),
+          _buildInfoRow('Payment Status', _currentOrder?.paymentStatusText ?? widget.order.paymentStatusText),
+          _buildInfoRow('Total Paid', '₹${_currentOrder?.totalAmount.toStringAsFixed(0) ?? widget.order.totalAmount.toStringAsFixed(0)}'),
         ],
       ),
     );
@@ -504,11 +518,11 @@ class _OrderDetailsScreenState extends State<OrderDetailsScreen>
             ),
           ),
           SizedBox(height: 16),
-          _buildTimelineItem('Order Placed', _formatDate(widget.order.orderDate), true),
-          _buildTimelineItem('Payment Confirmed', _formatDate(widget.order.orderDate), widget.order.paymentStatus == PaymentStatus.paid),
-          _buildTimelineItem('Processing', 'In progress...', widget.order.status.index >= OrderStatus.processing.index),
-          _buildTimelineItem('Shipped', widget.order.trackingNumber ?? 'Pending...', widget.order.status.index >= OrderStatus.shipped.index),
-          _buildTimelineItem('Delivered', widget.order.deliveryDate != null ? _formatDate(widget.order.deliveryDate!) : 'Pending...', widget.order.status == OrderStatus.delivered),
+          _buildTimelineItem('Order Placed', _formatDate(_currentOrder?.orderDate ?? widget.order.orderDate), true),
+          _buildTimelineItem('Payment Confirmed', _formatDate(_currentOrder?.orderDate ?? widget.order.orderDate), (_currentOrder?.paymentStatus ?? widget.order.paymentStatus) == PaymentStatus.paid),
+          _buildTimelineItem('Processing', 'In progress...', (_currentOrder?.status.index ?? widget.order.status.index) >= OrderStatus.processing.index),
+          _buildTimelineItem('Shipped', (_currentOrder?.trackingNumber ?? widget.order.trackingNumber) ?? 'Pending...', (_currentOrder?.status.index ?? widget.order.status.index) >= OrderStatus.shipped.index),
+          _buildTimelineItem('Delivered', (_currentOrder?.deliveryDate ?? widget.order.deliveryDate) != null ? _formatDate(_currentOrder?.deliveryDate ?? widget.order.deliveryDate!) : 'Pending...', (_currentOrder?.status ?? widget.order.status) == OrderStatus.delivered),
         ],
       ),
     );
@@ -645,10 +659,10 @@ class _OrderDetailsScreenState extends State<OrderDetailsScreen>
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text('Order #${widget.order.id}'),
+            Text('Order #${_currentOrder?.id ?? widget.order.id}'),
             SizedBox(height: 16),
-            if (widget.order.trackingNumber != null)
-              Text('Tracking Number: ${widget.order.trackingNumber}')
+            if ((_currentOrder?.trackingNumber ?? widget.order.trackingNumber) != null)
+              Text('Tracking Number: ${_currentOrder?.trackingNumber ?? widget.order.trackingNumber}')
             else
               Text('Tracking number will be available once shipped.'),
           ],
@@ -663,36 +677,309 @@ class _OrderDetailsScreenState extends State<OrderDetailsScreen>
     );
   }
 
-  void _showSupportDialog() {
+
+  Widget _buildContextualActionButton(double screenWidth, bool isTablet) {
+    final currentOrder = _currentOrder ?? widget.order;
+    
+    // Determine which action button to show based on order status
+    Widget? actionButton;
+    
+    if (currentOrder.status == OrderStatus.confirmed || 
+        currentOrder.status == OrderStatus.processing) {
+      // Show Cancel button for "Yet to be shipped" orders
+      actionButton = SizedBox(
+        width: double.infinity,
+        child: ElevatedButton.icon(
+          onPressed: () => _showCancelReturnForm('cancel'),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: Colors.orange,
+            foregroundColor: Colors.white,
+            padding: EdgeInsets.symmetric(vertical: 16),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+          ),
+          icon: Icon(Icons.cancel_outlined),
+          label: Text(
+            'Cancel Order',
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+      );
+    } else if (currentOrder.status == OrderStatus.shipped || 
+               currentOrder.status == OrderStatus.outForDelivery) {
+      // Show Return button for "Dispatched" orders
+      actionButton = SizedBox(
+        width: double.infinity,
+        child: ElevatedButton.icon(
+          onPressed: () => _showCancelReturnForm('return'),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: Colors.blue,
+            foregroundColor: Colors.white,
+            padding: EdgeInsets.symmetric(vertical: 16),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+          ),
+          icon: Icon(Icons.keyboard_return_outlined),
+          label: Text(
+            'Return Order',
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+      );
+    }
+    
+    // If no action button should be shown, return empty container
+    if (actionButton == null) {
+      return SizedBox.shrink();
+    }
+    
+    return Container(
+      padding: EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 15,
+            offset: Offset(0, 5),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Order Actions',
+            style: TextStyle(
+              fontSize: isTablet ? 18 : 16,
+              fontWeight: FontWeight.bold,
+              color: Colors.black87,
+            ),
+          ),
+          SizedBox(height: 16),
+          actionButton,
+        ],
+      ),
+    );
+  }
+  
+  void _showCancelReturnForm(String action) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => CancelReturnForm(
+        order: _currentOrder ?? widget.order,
+        action: action,
+        onSubmit: _handleCancelReturnSubmit,
+      ),
+    );
+  }
+  
+  Future<void> _handleCancelReturnSubmit(Map<String, dynamic> formData) async {
+    try {
+      final action = formData['action'];
+      
+      // Call backend API
+      final success = await ECommerceService.submitCancelReturn(formData);
+      
+      if (success) {
+        // Update order status locally
+        final newStatus = action == 'cancel' ? OrderStatus.cancelled : OrderStatus.returned;
+        
+        // Update the current order state
+        setState(() {
+          _currentOrder = Order(
+            id: (_currentOrder ?? widget.order).id,
+            customerId: (_currentOrder ?? widget.order).customerId,
+            customerName: (_currentOrder ?? widget.order).customerName,
+            customerEmail: (_currentOrder ?? widget.order).customerEmail,
+            customerPhone: (_currentOrder ?? widget.order).customerPhone,
+            items: (_currentOrder ?? widget.order).items,
+            totalAmount: (_currentOrder ?? widget.order).totalAmount,
+            status: newStatus,
+            paymentStatus: action == 'cancel' ? PaymentStatus.refunded : (_currentOrder ?? widget.order).paymentStatus,
+            paymentMethod: (_currentOrder ?? widget.order).paymentMethod,
+            orderDate: (_currentOrder ?? widget.order).orderDate,
+            deliveryDate: (_currentOrder ?? widget.order).deliveryDate,
+            shippingAddress: (_currentOrder ?? widget.order).shippingAddress,
+            trackingNumber: (_currentOrder ?? widget.order).trackingNumber,
+            statusHistory: [
+              ...(_currentOrder ?? widget.order).statusHistory,
+              '${DateTime.now().toString().substring(0, 16)}: Order ${action}led by customer'
+            ],
+            notes: (_currentOrder ?? widget.order).notes,
+            refundDetails: RefundDetails.fromJson(formData['refund_details']),
+            idempotencyToken: formData['idempotency_token'],
+          );
+        });
+        
+        // Show success message
+        _showSuccessAcknowledgement(action, formData);
+        
+        // Notify SalesIQ
+        await _notifySalesIQ(action, formData);
+        
+      } else {
+        throw Exception('Failed to process ${action} request');
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+  
+  void _showSuccessAcknowledgement(String action, Map<String, dynamic> formData) {
+    final isCancel = action == 'cancel';
+    final refundDetails = RefundDetails.fromJson(formData['refund_details']);
+    
     showDialog(
       context: context,
+      barrierDismissible: false,
       builder: (context) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: Text('Contact Support'),
+        title: Row(
+          children: [
+            Icon(
+              Icons.check_circle,
+              color: Colors.green,
+              size: 28,
+            ),
+            SizedBox(width: 12),
+            Text(isCancel ? 'Order Cancelled' : 'Order Returned'),
+          ],
+        ),
         content: Column(
           mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Need help with your order?'),
+            Text(
+              isCancel 
+                ? 'Order cancelled successfully!' 
+                : 'Order returned successfully!',
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
             SizedBox(height: 16),
-            Text('Order #${widget.order.id}'),
-            SizedBox(height: 16),
-            Text('Our support team is here to help!'),
+            Container(
+              padding: EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.grey.shade50,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Refund Details',
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 14,
+                    ),
+                  ),
+                  SizedBox(height: 8),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text('Refund Amount:'),
+                      Text(
+                        '₹${refundDetails.refundableAmount.toStringAsFixed(2)}',
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: Colors.green,
+                        ),
+                      ),
+                    ],
+                  ),
+                  SizedBox(height: 4),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text('Refund Method:'),
+                      Text(_getRefundMethodLabel(refundDetails.refundMethod)),
+                    ],
+                  ),
+                  if (refundDetails.refundReference != null) ...[
+                    SizedBox(height: 4),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text('Reference:'),
+                        Text(refundDetails.refundReference!),
+                      ],
+                    ),
+                  ],
+                ],
+              ),
+            ),
           ],
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: Text('Cancel'),
+            child: Text('OK'),
           ),
           ElevatedButton(
             onPressed: () {
               Navigator.pop(context);
-              // Open SalesIQ chat or support system
+              // Navigate back to orders list
+              Navigator.pop(context);
             },
-            child: Text('Chat Now'),
+            child: Text('Back to Orders'),
           ),
         ],
       ),
     );
+  }
+  
+  Future<void> _notifySalesIQ(String action, Map<String, dynamic> formData) async {
+    try {
+      final customerEmail = (_currentOrder ?? widget.order).customerEmail;
+      final orderId = (_currentOrder ?? widget.order).id;
+      
+      // Track the cancel/return action for SalesIQ timeline
+      await CustomerTimelineService.trackCustomerActivity(
+        customerEmail,
+        action == 'cancel' ? 'Order Cancelled' : 'Order Returned',
+        'Order $orderId ${action}led by customer. Reason: ${formData['reason']}',
+      );
+      
+      // Send notification to SalesIQ operators
+      await ECommerceService.notifySalesIQOperator(
+        customerEmail: customerEmail,
+        orderId: orderId,
+        action: action,
+        reason: formData['reason'],
+      );
+      
+    } catch (e) {
+      print('Error notifying SalesIQ: $e');
+    }
+  }
+  
+  String _getRefundMethodLabel(RefundMethod method) {
+    switch (method) {
+      case RefundMethod.original_payment:
+        return 'Original Payment';
+      case RefundMethod.store_credit:
+        return 'Store Credit';
+      case RefundMethod.bank_transfer:
+        return 'Bank Transfer';
+    }
   }
 }

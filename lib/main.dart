@@ -9,6 +9,8 @@ import 'firebase_options.dart';
 import 'services/customer_timeline_service.dart';
 import 'services/ecommerce_customer_service.dart';
 import 'screens/login_screen.dart';
+import 'screens/order_details_screen.dart';
+import 'models/order.dart';
 
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
@@ -165,6 +167,12 @@ class _MyAppState extends State<MyApp> {
         primarySwatch: Colors.blue,
         visualDensity: VisualDensity.adaptivePlatformDensity,
       ),
+      routes: {
+        '/order-details': (context) {
+          final order = ModalRoute.of(context)!.settings.arguments;
+          return OrderDetailsScreen(order: order as Order);
+        },
+      },
     );
   }
 }

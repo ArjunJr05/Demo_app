@@ -19,6 +19,48 @@ enum PaymentStatus {
   refunded
 }
 
+enum RefundMethod {
+  original_payment,
+  store_credit,
+  bank_transfer
+}
+
+class RefundDetails {
+  final double refundableAmount;
+  final RefundMethod refundMethod;
+  final String? accountReference;
+  final String? refundReference;
+  final DateTime? refundDate;
+
+  RefundDetails({
+    required this.refundableAmount,
+    required this.refundMethod,
+    this.accountReference,
+    this.refundReference,
+    this.refundDate,
+  });
+
+  Map<String, dynamic> toJson() {
+    return {
+      'refundableAmount': refundableAmount,
+      'refundMethod': refundMethod.toString(),
+      'accountReference': accountReference,
+      'refundReference': refundReference,
+      'refundDate': refundDate?.toIso8601String(),
+    };
+  }
+
+  factory RefundDetails.fromJson(Map<String, dynamic> json) {
+    return RefundDetails(
+      refundableAmount: json['refundableAmount'].toDouble(),
+      refundMethod: RefundMethod.values.firstWhere((e) => e.toString() == json['refundMethod']),
+      accountReference: json['accountReference'],
+      refundReference: json['refundReference'],
+      refundDate: json['refundDate'] != null ? DateTime.parse(json['refundDate']) : null,
+    );
+  }
+}
+
 class OrderItem {
   final String productId;
   final String productName;
@@ -82,6 +124,8 @@ class Order {
   final String? trackingNumber;
   final List<String> statusHistory;
   final String? notes;
+  final RefundDetails? refundDetails;
+  final String? idempotencyToken;
 
   Order({
     required this.id,
@@ -100,6 +144,8 @@ class Order {
     this.trackingNumber,
     this.statusHistory = const [],
     this.notes,
+    this.refundDetails,
+    this.idempotencyToken,
   });
 
   String get statusText {
@@ -154,6 +200,8 @@ class Order {
       'trackingNumber': trackingNumber,
       'statusHistory': statusHistory,
       'notes': notes,
+      'refundDetails': refundDetails?.toJson(),
+      'idempotencyToken': idempotencyToken,
     };
   }
 
@@ -175,6 +223,8 @@ class Order {
       trackingNumber: json['trackingNumber'],
       statusHistory: List<String>.from(json['statusHistory'] ?? []),
       notes: json['notes'],
+      refundDetails: json['refundDetails'] != null ? RefundDetails.fromJson(json['refundDetails']) : null,
+      idempotencyToken: json['idempotencyToken'],
     );
   }
 }

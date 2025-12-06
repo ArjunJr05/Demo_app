@@ -57,6 +57,11 @@ class CustomerTimelineService {
     );
   }
   
+  /// Track custom customer activity (public method)
+  static Future<void> trackCustomerActivity(String userEmail, String action, String details) async {
+    await _trackActivity(userEmail, action, details);
+  }
+  
   // 🔄 SYNC WITH SALESIQ WEBHOOK
   
   /// Send activity data to the Smart Timeline Webhook

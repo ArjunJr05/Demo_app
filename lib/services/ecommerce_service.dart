@@ -429,4 +429,85 @@ class ECommerceService {
         return PaymentStatus.pending;
     }
   }
+
+  // 🔄 CANCEL/RETURN ORDER FUNCTIONALITY
+  static Future<bool> submitCancelReturn(Map<String, dynamic> formData) async {
+    try {
+      final orderId = formData['order_id'];
+      final action = formData['action'];
+      
+      print('📝 Submitting ${action} request for order: $orderId');
+      
+      // Update order status locally
+      final newStatus = action == 'cancel' ? OrderStatus.cancelled : OrderStatus.returned;
+      await updateOrderStatus(orderId, newStatus);
+      
+      // Send to webhook for backend processing
+      await _syncCancelReturnWithWebhook(formData);
+      
+      // Track activity
+      await _trackCustomerActivity(
+        formData['user_id'],
+        action == 'cancel' ? 'Order Cancelled' : 'Order Returned',
+        'Order $orderId ${action}led by customer. Reason: ${formData['reason']}'
+      );
+      
+      print('✅ ${action} request processed successfully');
+      return true;
+    } catch (e) {
+      print('❌ Error processing ${formData['action']} request: $e');
+      return false;
+    }
+  }
+  
+  // 📡 NOTIFY SALESIQ OPERATOR
+  static Future<void> notifySalesIQOperator({
+    required String customerEmail,
+    required String orderId,
+    required String action,
+    required String reason,
+  }) async {
+    try {
+      final notification = {
+        'type': 'order_${action}',
+        'customerEmail': customerEmail,
+        'orderId': orderId,
+        'action': action,
+        'reason': reason,
+        'timestamp': DateTime.now().toIso8601String(),
+        'priority': 'high',
+        'message': 'Customer ${action}led order $orderId. Reason: $reason',
+      };
+      
+      // Send notification to webhook
+      await http.post(
+        Uri.parse('$_webhookUrl/api/notifications'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode(notification),
+      ).timeout(Duration(seconds: 5));
+      
+      print('✅ SalesIQ operator notified about ${action} request');
+    } catch (e) {
+      print('⚠️ Could not notify SalesIQ operator: $e');
+    }
+  }
+  
+  // 🔄 SYNC CANCEL/RETURN WITH WEBHOOK
+  static Future<void> _syncCancelReturnWithWebhook(Map<String, dynamic> formData) async {
+    try {
+      final endpoint = formData['action'] == 'cancel' 
+        ? '/orders/${formData['order_id']}/cancel'
+        : '/orders/${formData['order_id']}/return';
+        
+      await http.post(
+        Uri.parse('$_webhookUrl$endpoint'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode(formData),
+      ).timeout(Duration(seconds: 10));
+      
+      print('✅ ${formData['action']} request synced with backend');
+    } catch (e) {
+      print('⚠️ Could not sync ${formData['action']} with backend: $e');
+    }
+  }
 }

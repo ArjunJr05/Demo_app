@@ -382,6 +382,19 @@ module.exports = async function handler(req, res) {
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }
+  
+  // Handle cancel/return endpoints
+  if (req.method === 'POST' && req.url) {
+    if (req.url.includes('/orders/') && req.url.includes('/cancel')) {
+      return handleCancelOrder(req, res);
+    }
+    if (req.url.includes('/orders/') && req.url.includes('/return')) {
+      return handleReturnOrder(req, res);
+    }
+    if (req.url.includes('/api/notifications')) {
+      return handleNotification(req, res);
+    }
+  }
 
   // Handle GET requests (for debugging)
   if (req.method === 'GET') {
@@ -472,4 +485,99 @@ module.exports = async function handler(req, res) {
     message: 'Only GET and POST methods are supported',
     method: req.method
   });
+}
+
+// 🔄 HANDLE CANCEL ORDER
+async function handleCancelOrder(req, res) {
+  try {
+    console.log('📝 Processing cancel order request');
+    const formData = req.body;
+    
+    // Generate refund reference
+    const refundReference = `REF${Date.now()}`;
+    
+    // Simulate processing
+    const response = {
+      success: true,
+      orderId: formData.order_id,
+      action: 'cancel',
+      refundDetails: {
+        ...formData.refund_details,
+        refundReference: refundReference,
+        refundDate: new Date().toISOString(),
+        status: 'processed'
+      },
+      message: 'Order cancelled successfully'
+    };
+    
+    console.log('✅ Cancel order processed:', response);
+    return res.status(200).json(response);
+  } catch (error) {
+    console.error('❌ Cancel order error:', error);
+    return res.status(500).json({ error: 'Failed to process cancellation' });
+  }
+}
+
+// 🔄 HANDLE RETURN ORDER
+async function handleReturnOrder(req, res) {
+  try {
+    console.log('📝 Processing return order request');
+    const formData = req.body;
+    
+    // Generate refund reference
+    const refundReference = `REF${Date.now()}`;
+    
+    // Simulate processing
+    const response = {
+      success: true,
+      orderId: formData.order_id,
+      action: 'return',
+      refundDetails: {
+        ...formData.refund_details,
+        refundReference: refundReference,
+        refundDate: new Date().toISOString(),
+        status: 'processed'
+      },
+      message: 'Order returned successfully'
+    };
+    
+    console.log('✅ Return order processed:', response);
+    return res.status(200).json(response);
+  } catch (error) {
+    console.error('❌ Return order error:', error);
+    return res.status(500).json({ error: 'Failed to process return' });
+  }
+}
+
+// 📡 HANDLE SALESIQ NOTIFICATIONS
+async function handleNotification(req, res) {
+  try {
+    console.log('📡 Processing SalesIQ notification');
+    const notification = req.body;
+    
+    // Log the notification for SalesIQ operators
+    console.log('🔔 SalesIQ Operator Notification:', {
+      type: notification.type,
+      customer: notification.customerEmail,
+      order: notification.orderId,
+      action: notification.action,
+      reason: notification.reason,
+      priority: notification.priority,
+      timestamp: notification.timestamp
+    });
+    
+    // In a real implementation, you would:
+    // 1. Send to SalesIQ webhook
+    // 2. Store in database
+    // 3. Send email/SMS to operators
+    // 4. Update customer timeline
+    
+    return res.status(200).json({
+      success: true,
+      message: 'Notification processed successfully'
+    });
+  } catch (error) {
+    console.error('❌ Notification error:', error);
+    return res.status(500).json({ error: 'Failed to process notification' });
+  }
 }
