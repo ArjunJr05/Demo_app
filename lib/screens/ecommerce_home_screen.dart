@@ -5,7 +5,11 @@ import '../models/product.dart';
 import '../models/order.dart';
 import '../services/ecommerce_service.dart';
 import '../services/customer_timeline_service.dart';
+import '../services/firestore_service.dart';
+import '../services/init_firestore_data.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'order_details_screen.dart';
+import 'product_detail_screen.dart';
 
 class ECommerceHomeScreen extends StatefulWidget {
   final String customerEmail;
@@ -35,17 +39,49 @@ class _ECommerceHomeScreenState extends State<ECommerceHomeScreen> {
   }
 
   Future<void> _loadData() async {
+    // Initialize Firestore with sample products if needed
+    await InitFirestoreData.initializeIfNeeded();
+    
+    // Fetch products from Firestore
+    final firestoreProducts = await FirestoreService.getProducts();
     setState(() {
-      products = ECommerceService.sampleProducts;
+      products = firestoreProducts.isNotEmpty ? firestoreProducts : ECommerceService.sampleProducts;
     });
     
-    print('🔄 Loading orders for customer: ${widget.customerEmail}');
-    final customerOrders = await ECommerceService.getCustomerOrders(widget.customerEmail);
-    print('📦 Found ${customerOrders.length} orders for ${widget.customerEmail}');
-    
-    setState(() {
-      orders = customerOrders;
-    });
+    // Fetch orders, cart, and favorites from Firestore
+    final user = FirebaseAuth.instance.currentUser;
+    if (user != null) {
+      print('🔄 Loading data for customer: ${user.uid}');
+      
+      // Load orders
+      final customerOrders = await FirestoreService.getCustomerOrders(user.uid);
+      print('📦 Found ${customerOrders.length} orders');
+      
+      // Load cart items
+      final cartItems = await FirestoreService.getCartItems(user.uid);
+      print('🛒 Found ${cartItems.length} cart items');
+      
+      // Load favorites
+      final favoritesData = await FirestoreService.getFavorites(user.uid);
+      print('❤️ Found ${favoritesData.length} favorites');
+      
+      // Convert favorites to OrderItem format
+      final favoriteItems = favoritesData.map((fav) {
+        return OrderItem(
+          productId: fav['productId'],
+          productName: fav['productName'],
+          price: fav['price'].toDouble(),
+          quantity: 1,
+          imageUrl: fav['imageUrl'],
+        );
+      }).toList();
+      
+      setState(() {
+        orders = customerOrders;
+        cart = cartItems;
+        favoriteProducts = favoriteItems;
+      });
+    }
   }
 
   Future<void> _initializeSalesIQ() async {
@@ -285,53 +321,6 @@ class _ECommerceHomeScreenState extends State<ECommerceHomeScreen> {
           ],
         ),
       ),
-      
-      // Modern Bottom Navigation
-      bottomNavigationBar: Container(
-        padding: EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.only(
-            topLeft: Radius.circular(24),
-            topRight: Radius.circular(24),
-          ),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.05),
-              blurRadius: 10,
-              offset: Offset(0, -5),
-            ),
-          ],
-        ),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceAround,
-          children: [
-            _buildBottomNavItem(Icons.home_rounded, true),
-            GestureDetector(
-              onTap: _showFavorites,
-              child: _buildBottomNavItemWithBadge(
-                Icons.favorite_border_rounded, 
-                false, 
-                favoriteProducts.length
-              ),
-            ),
-            GestureDetector(
-              onTap: _showMyOrders,
-              child: _buildBottomNavItem(Icons.receipt_long_rounded, false),
-            ),
-            GestureDetector(
-              onTap: () async {
-                await CustomerTimelineService.trackChatInteraction(widget.customerEmail, 0);
-                ZohoSalesIQ.present();
-              },
-              child: _buildBottomNavItem(Icons.support_agent_rounded, false),
-            ),
-          ],
-        ),
-      ),
-      
-      
-      
     );
   }
 
@@ -424,19 +413,28 @@ class _ECommerceHomeScreenState extends State<ECommerceHomeScreen> {
   Widget _buildModernProductCard(Product product) {
     final isLiked = favoriteProducts.any((item) => item.productId == product.id);
     
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(20),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.05),
-            blurRadius: 10,
-            offset: Offset(0, 5),
+    return GestureDetector(
+      onTap: () {
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => ProductDetailScreen(product: product),
           ),
-        ],
-      ),
-      child: Column(
+        );
+      },
+      child: Container(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(20),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.05),
+              blurRadius: 10,
+              offset: Offset(0, 5),
+            ),
+          ],
+        ),
+        child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           // Product Image Container
@@ -576,6 +574,7 @@ class _ECommerceHomeScreenState extends State<ECommerceHomeScreen> {
             ),
           ),
         ],
+        ),
       ),
     );
   }
@@ -633,27 +632,57 @@ class _ECommerceHomeScreenState extends State<ECommerceHomeScreen> {
     return 'https://images.unsplash.com/photo-1441986300917-64674bd600d8?w=400&h=400&fit=crop'; // Default shopping image
   }
 
-  void _toggleFavorite(Product product) {
-    setState(() {
-      final existingIndex = favoriteProducts.indexWhere((item) => item.productId == product.id);
+  Future<void> _toggleFavorite(Product product) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    final existingIndex = favoriteProducts.indexWhere((item) => item.productId == product.id);
+    
+    try {
       if (existingIndex >= 0) {
-        favoriteProducts.removeAt(existingIndex);
+        // Remove from Firestore
+        await FirestoreService.removeFromFavorites(
+          userId: user.uid,
+          productId: product.id,
+        );
+        
+        setState(() {
+          favoriteProducts.removeAt(existingIndex);
+        });
+        
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('${product.name} removed from favorites')),
         );
       } else {
-        favoriteProducts.add(OrderItem(
+        // Add to Firestore
+        await FirestoreService.addToFavorites(
+          userId: user.uid,
           productId: product.id,
           productName: product.name,
           price: product.price,
-          quantity: 1,
           imageUrl: product.imageUrl,
-        ));
+          category: product.category,
+        );
+        
+        setState(() {
+          favoriteProducts.add(OrderItem(
+            productId: product.id,
+            productName: product.name,
+            price: product.price,
+            quantity: 1,
+            imageUrl: product.imageUrl,
+          ));
+        });
+        
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('${product.name} added to favorites ❤️')),
         );
       }
-    });
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+      );
+    }
   }
 
   void _showFavorites() {
@@ -788,7 +817,21 @@ class _ECommerceHomeScreenState extends State<ECommerceHomeScreen> {
   }
 
 
-  void _addToCart(Product product) {
+  Future<void> _addToCart(Product product) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+    
+    // Add to Firestore
+    await FirestoreService.addToCart(
+      userId: user.uid,
+      productId: product.id,
+      productName: product.name,
+      price: product.price,
+      imageUrl: product.imageUrl,
+      quantity: 1,
+    );
+    
+    // Add to local cart
     setState(() {
       cart.add(OrderItem(
         productId: product.id,
@@ -872,26 +915,40 @@ class _ECommerceHomeScreenState extends State<ECommerceHomeScreen> {
     if (paymentResult == null) return;
     
     try {
-      final orderId = await ECommerceService.createOrder(
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) {
+        throw 'User not authenticated';
+      }
+      
+      // Calculate total amount
+      double totalAmount = cart.fold(0.0, (sum, item) => sum + item.totalPrice);
+      
+      // Create order in Firestore
+      final orderId = await FirestoreService.createOrder(
+        customerId: user.uid,
         customerName: widget.customerName,
         customerEmail: widget.customerEmail,
         customerPhone: '+91 9876543210', // In real app, get from user profile
-        items: cart,
         shippingAddress: '123 MG Road, Bangalore, Karnataka 560001', // In real app, get from user
+        items: cart,
+        totalAmount: totalAmount,
         paymentMethod: paymentResult['method'] ?? 'UPI',
-        paymentStatus: paymentResult['status'] ?? 'paid',
+        deliveryDate: DateTime.now().add(Duration(days: 7)), // 7 days from now
       );
-      
-      setState(() {
-        cart.clear();
-      });
       
       // Track purchase for SalesIQ
       await CustomerTimelineService.trackPurchaseAttempt(
         widget.customerEmail,
         cart.map((item) => item.productName).join(', '),
-        cart.fold(0.0, (sum, item) => sum + item.totalPrice),
+        totalAmount,
       );
+      
+      // Clear cart from Firestore
+      await FirestoreService.clearCart(user.uid);
+      
+      setState(() {
+        cart.clear();
+      });
       
       _loadData(); // Refresh orders
       
@@ -1045,17 +1102,47 @@ class _MyOrdersScreenState extends State<MyOrdersScreen>
     with TickerProviderStateMixin {
   late AnimationController _animationController;
   List<Order> _currentOrders = [];
-  bool _isLoading = false;
+  bool _isLoading = true;
 
   @override
   void initState() {
     super.initState();
-    _currentOrders = widget.orders;
     _animationController = AnimationController(
       duration: Duration(milliseconds: 600),
       vsync: this,
     );
-    _animationController.forward();
+    _loadOrders();
+  }
+
+  Future<void> _loadOrders() async {
+    setState(() {
+      _isLoading = true;
+    });
+
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user != null) {
+        final orders = await FirestoreService.getCustomerOrders(user.uid);
+        setState(() {
+          _currentOrders = orders;
+          _isLoading = false;
+        });
+        _animationController.forward();
+      } else {
+        setState(() {
+          _currentOrders = widget.orders;
+          _isLoading = false;
+        });
+        _animationController.forward();
+      }
+    } catch (e) {
+      print('Error loading orders: $e');
+      setState(() {
+        _currentOrders = widget.orders;
+        _isLoading = false;
+      });
+      _animationController.forward();
+    }
   }
 
   @override
@@ -1323,14 +1410,21 @@ class _MyOrdersScreenState extends State<MyOrdersScreen>
     });
     
     try {
-      print('🔄 Refreshing orders for customer: ${widget.customerEmail}');
-      final refreshedOrders = await ECommerceService.getCustomerOrders(widget.customerEmail);
-      print('📦 Refreshed: Found ${refreshedOrders.length} orders');
-      
-      setState(() {
-        _currentOrders = refreshedOrders;
-        _isLoading = false;
-      });
+      final user = FirebaseAuth.instance.currentUser;
+      if (user != null) {
+        print('🔄 Refreshing orders for customer: ${user.uid}');
+        final refreshedOrders = await FirestoreService.getCustomerOrders(user.uid);
+        print('📦 Refreshed: Found ${refreshedOrders.length} orders');
+        
+        setState(() {
+          _currentOrders = refreshedOrders;
+          _isLoading = false;
+        });
+      } else {
+        setState(() {
+          _isLoading = false;
+        });
+      }
     } catch (e) {
       print('❌ Error refreshing orders: $e');
       setState(() {

@@ -8,7 +8,9 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'firebase_options.dart';
 import 'services/customer_timeline_service.dart';
 import 'services/ecommerce_customer_service.dart';
+import 'services/preferences_service.dart';
 import 'screens/login_screen.dart';
+import 'screens/main_navigation.dart';
 import 'screens/order_details_screen.dart';
 import 'models/order.dart';
 
@@ -161,7 +163,38 @@ class _MyAppState extends State<MyApp> {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: '🛍️ E-Commerce with Smart SalesIQ',
-      home: LoginScreen(),
+      home: FutureBuilder<bool>(
+        future: PreferencesService.isLoggedIn(),
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return Scaffold(
+              body: Center(child: CircularProgressIndicator()),
+            );
+          }
+          
+          // Check if user is logged in
+          if (snapshot.data == true) {
+            return FutureBuilder<Map<String, String?>>(
+              future: PreferencesService.getSavedUserData(),
+              builder: (context, userSnapshot) {
+                if (userSnapshot.connectionState == ConnectionState.waiting) {
+                  return Scaffold(
+                    body: Center(child: CircularProgressIndicator()),
+                  );
+                }
+                
+                final userData = userSnapshot.data ?? {};
+                return MainNavigation(
+                  customerEmail: userData['email'] ?? '',
+                  customerName: userData['name'] ?? 'User',
+                );
+              },
+            );
+          }
+          
+          return LoginScreen();
+        },
+      ),
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         primarySwatch: Colors.blue,

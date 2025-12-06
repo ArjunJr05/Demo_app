@@ -41,46 +41,47 @@ class DefaultFirebaseOptions {
   }
 
   static const FirebaseOptions web = FirebaseOptions(
-    apiKey: 'AIzaSyBmokioyIUugGTLyOZCr3zLvngL-UqGrL4',
-    appId: '1:408592089006:web:98ef4e5fb918931a97523f',
-    messagingSenderId: '408592089006',
-    projectId: 'salesiq-47533',
-    authDomain: 'salesiq-47533.firebaseapp.com',
-    storageBucket: 'salesiq-47533.firebasestorage.app',
+    apiKey: 'AIzaSyD8aATGBvBVCIQzV1aPPBFWMP5ZorbOCfw',
+    appId: '1:176891083985:web:59e37e6086155084bc99f0',
+    messagingSenderId: '176891083985',
+    projectId: 'salesiq-f0530',
+    authDomain: 'salesiq-f0530.firebaseapp.com',
+    storageBucket: 'salesiq-f0530.firebasestorage.app',
   );
 
   static const FirebaseOptions android = FirebaseOptions(
-    apiKey: 'AIzaSyBmokioyIUugGTLyOZCr3zLvngL-UqGrL4',
-    appId: '1:408592089006:android:98ef4e5fb918931a97523f',
-    messagingSenderId: '408592089006',
-    projectId: 'salesiq-47533',
-    storageBucket: 'salesiq-47533.firebasestorage.app',
+    apiKey: 'AIzaSyBGhuuea7SUgHl6wfRY33dQI80wRtmPtOo',
+    appId: '1:176891083985:android:cdedd91dc48f5e4fbc99f0',
+    messagingSenderId: '176891083985',
+    projectId: 'salesiq-f0530',
+    storageBucket: 'salesiq-f0530.firebasestorage.app',
   );
 
   static const FirebaseOptions ios = FirebaseOptions(
-    apiKey: 'AIzaSyBmokioyIUugGTLyOZCr3zLvngL-UqGrL4',
-    appId: '1:408592089006:ios:98ef4e5fb918931a97523f',
-    messagingSenderId: '408592089006',
-    projectId: 'salesiq-47533',
-    storageBucket: 'salesiq-47533.firebasestorage.app',
+    apiKey: 'AIzaSyCvFaSlqbmQE4Y2cfq-9CQsZbUpaZx87Mg',
+    appId: '1:176891083985:ios:e190a6e446c465d1bc99f0',
+    messagingSenderId: '176891083985',
+    projectId: 'salesiq-f0530',
+    storageBucket: 'salesiq-f0530.firebasestorage.app',
     iosBundleId: 'com.example.salesiq',
   );
 
   static const FirebaseOptions macos = FirebaseOptions(
-    apiKey: 'AIzaSyBmokioyIUugGTLyOZCr3zLvngL-UqGrL4',
-    appId: '1:408592089006:macos:98ef4e5fb918931a97523f',
-    messagingSenderId: '408592089006',
-    projectId: 'salesiq-47533',
-    storageBucket: 'salesiq-47533.firebasestorage.app',
+    apiKey: 'AIzaSyCvFaSlqbmQE4Y2cfq-9CQsZbUpaZx87Mg',
+    appId: '1:176891083985:ios:e190a6e446c465d1bc99f0',
+    messagingSenderId: '176891083985',
+    projectId: 'salesiq-f0530',
+    storageBucket: 'salesiq-f0530.firebasestorage.app',
     iosBundleId: 'com.example.salesiq',
   );
 
   static const FirebaseOptions windows = FirebaseOptions(
-    apiKey: 'AIzaSyBmokioyIUugGTLyOZCr3zLvngL-UqGrL4',
-    appId: '1:408592089006:windows:98ef4e5fb918931a97523f',
-    messagingSenderId: '408592089006',
-    projectId: 'salesiq-47533',
-    authDomain: 'salesiq-47533.firebaseapp.com',
-    storageBucket: 'salesiq-47533.firebasestorage.app',
+    apiKey: 'AIzaSyD8aATGBvBVCIQzV1aPPBFWMP5ZorbOCfw',
+    appId: '1:176891083985:web:afa2c96c87c715afbc99f0',
+    messagingSenderId: '176891083985',
+    projectId: 'salesiq-f0530',
+    authDomain: 'salesiq-f0530.firebaseapp.com',
+    storageBucket: 'salesiq-f0530.firebasestorage.app',
   );
+
 }

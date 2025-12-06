@@ -182,6 +182,7 @@ class _OrderDetailsScreenState extends State<OrderDetailsScreen>
           mainAxisAlignment: MainAxisAlignment.spaceEvenly,
           children: [
             FloatingActionButton.extended(
+              heroTag: 'track_order_btn',
               onPressed: () {
                 // Track order functionality
                 _showTrackingDialog();
@@ -195,6 +196,7 @@ class _OrderDetailsScreenState extends State<OrderDetailsScreen>
               ),
             ),
             FloatingActionButton.extended(
+              heroTag: 'support_btn',
               onPressed: () async {
                 // Contact support with SalesIQ integration
                 await CustomerTimelineService.trackChatInteraction(
@@ -238,14 +240,18 @@ class _OrderDetailsScreenState extends State<OrderDetailsScreen>
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                'Order #${widget.order.id}',
-                style: TextStyle(
-                  fontSize: isTablet ? 20 : 18,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.black87,
+              Flexible(
+                child: Text(
+                  'Order #${widget.order.id}',
+                  style: TextStyle(
+                    fontSize: isTablet ? 20 : 18,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.black87,
+                  ),
+                  overflow: TextOverflow.ellipsis,
                 ),
               ),
+              SizedBox(width: 8),
               Container(
                 padding: EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                 decoration: BoxDecoration(
