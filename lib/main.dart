@@ -73,7 +73,7 @@ class _MyAppState extends State<MyApp> {
       // Initialize your published package with your webhook URL
       await SalesIQCustomerService.initialize(
         SalesIQConfig.production(
-          webhookUrl: 'https://webhook-nine-rust.vercel.app',
+          webhookUrl: 'https://nonchivalrous-paranoidly-cara.ngrok-free.dev/webhook',
           salesiqAppKey: 't1OeQIU%2FmlrpMxqTO39iHaNPA0sI%2BHQ5AizEotzng3Wwtr%2BIsn9ZOK3%2B0ClJaj9X_in',
           salesiqAccessKey: 'VXYedrQX8SnJRvzO%2FuvqFQjlbXi6YSbBo5L%2BVmToUTRNngPRgRjQqbwuU8T0jVeq%2FZYBNOatAgBBvd07aqZoqLAU%2F2ZD3bgmOwWB9jE6YMDrVyEdG%2BORHA%3D%3D',
         ),
