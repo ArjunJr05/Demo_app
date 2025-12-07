@@ -38,7 +38,7 @@ Line 13:
 ```javascript
 const WEBHOOK_SECRET = 'my_super_secret_key_12345';
 ```
-
+ 
 **Generate a Strong Secret:**
 ```bash
 # On Mac/Linux
