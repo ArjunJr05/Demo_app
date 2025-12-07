@@ -6,11 +6,19 @@
 const express = require('express');
 const cors = require('cors');
 const admin = require('firebase-admin');
+const crypto = require('crypto');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 // 🔐 WEBHOOK SECRET for SalesIQ Form Controller
-const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || 'your_shared_secret_here_change_in_production';
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAkcF061XP/AvyIU/lGXWo1rqARBPgGxq3aZ2htG24fcY9oO35/8hVoO+vYjU5bBZRXheq2FnvDBMDrsGaOUZ1Q5dcfmZBRF0wZzw26c4qO6Ra8as7qqqF1SuQLVDvmzE2oDqEpeC8fiaX63zB3tqOIbebcfrIKB446VS3LWKB59Iqxpi3shjpLvJeEYKkFx/9H+sGyjS4YUuEIW+NUVVAv0qF6uJps3pZM5EALyxw9q7atcEHylRqYSm3PTu0j57ggxNCo9Ajm9d7fgTKlYaMZgnnbiJpwXZPsvtZfZSdMgdzPPhjmuVqyR8By/4E2XBhHf5byx8Tg5ifkc6h0UuDlQIDAQAB';
+// 🔐 HMAC SHA256 Signature Verification
+function verifyWebhookSignature(payload, signature) {
+  if (!signature) return false;
+  const hmac = crypto.createHmac('sha256', WEBHOOK_SECRET);
+  const digest = hmac.update(JSON.stringify(payload)).digest('hex');
+  return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(digest));
+}
 
 // Initialize Firebase Admin SDK
 let db = null;
@@ -73,7 +81,7 @@ function createCustomerDataForm() {
     type: "widget_detail",
     sections: [
       {
-        name: "customer_form",
+        name: "customer_data_form",
         layout: "info",
         title: "📝 Customer Information",
         data: [
@@ -82,7 +90,7 @@ function createCustomerDataForm() {
           { label: "Optional", value: "Phone and Order ID are optional" }
         ],
         actions: [
-          { label: "📝 Fill Customer Form", name: "show_customer_form" },
+          { label: "📝 Fill Customer Form", name: "show_customer_data_form" },
           { label: "🔙 Skip for Now", name: "skip_form" }
         ]
       }
@@ -101,7 +109,7 @@ function createCancelOrderForm(orderData) {
     type: "form",
     title: `❌ Cancel Order ${orderData.id}`,
     name: "cancel_order_form",
-    fields: [
+    inputs: [
       {
         type: "text",
         name: "order_id",
@@ -286,10 +294,13 @@ async function handleCustomerDataForm(formData, visitorInfo) {
   
   if (!customerData) {
     return {
-      type: "message",
-      text: `❌ No customer data found for ${customerEmail}. Please check your email address or contact support.`,
-      delay: 1000
+      action: "reply",
+      replies: [
+        { text: "Your message here" }
+      ],
+      suggestions: ["Option 1", "Option 2"]
     };
+
   }
   
   // Handle specific inquiry types
@@ -547,18 +558,21 @@ function createErrorResponse(message) {
 async function processCancellation(cancellationData) {
   try {
     const refundReference = `REF${Date.now()}`;
+    const reason = cancellationData.cancellation_reason || cancellationData.reason || 'No reason provided';
+    
+    // Build update data, filtering out undefined values
+    const additionalData = {};
+    if (reason) additionalData.cancelReason = reason;
+    if (refundReference) additionalData.refundReference = refundReference;
+    if (cancellationData.refund_details) additionalData.refundDetails = cancellationData.refund_details;
+    additionalData.cancelledAt = admin.firestore.FieldValue.serverTimestamp();
     
     // Update order status in Firestore
     const success = await updateOrderStatusInFirestore(
       cancellationData.order_id,
       'cancelled',
       cancellationData.user_id,
-      {
-        cancelReason: cancellationData.reason,
-        refundReference: refundReference,
-        refundDetails: cancellationData.refund_details,
-        cancelledAt: admin.firestore.FieldValue.serverTimestamp()
-      }
+      additionalData
     );
     
     if (success) {
@@ -568,7 +582,7 @@ async function processCancellation(cancellationData) {
         customerEmail: cancellationData.user_id,
         orderId: cancellationData.order_id,
         issueType: 'Order Cancellation',
-        description: `Order cancelled by customer. Reason: ${cancellationData.reason}`,
+        description: `Order cancelled by customer. Reason: ${reason}`,
         status: 'Resolved',
         resolution: `Refund processed with reference: ${refundReference}`
       });
@@ -883,7 +897,7 @@ function getMockCustomerData(customerEmail) {
             { productName: 'Screen Protector', price: 299, quantity: 1 }
           ],
           totalAmount: 898,
-          status: 'outForDelivery',
+          status: 'out_for_delivery',
           paymentStatus: 'paid',
           paymentMethod: 'UPI',
           deliveryDate: '2024-11-30T18:00:00Z',
@@ -1508,6 +1522,8 @@ async function handleButtonAction(action, visitorInfo) {
     case 'return_action':
       return handleReturnAction(customerData, visitorInfo);
     case 'cancel_action':
+      // For cancel action from widget, show orders and let user select
+      console.log('📋 Cancel action from widget - showing cancellable orders');
       return handleCancelAction(customerData, visitorInfo);
     case 'other_action':
       return handleOtherAction(customerData, visitorInfo);
@@ -1573,12 +1589,17 @@ async function handleCancelAction(customerData, visitorInfo) {
           .orderBy('orderDate', 'desc')
           .get();
         
+        console.log(`📋 Total orders found in Firestore: ${ordersSnapshot.size}`);
+        
         ordersSnapshot.forEach(doc => {
           const orderData = doc.data();
           const status = orderData.status?.toString().toLowerCase().split('.').pop() || '';
           
+          console.log(`  📦 Order ${doc.id}: Status = "${status}", Product = ${orderData.items?.[0]?.productName || 'Unknown'}, Amount = ₹${orderData.totalAmount || 0}`);
+          
           // Only include orders that can be cancelled
           if (status === 'confirmed' || status === 'processing' || status === 'pending') {
+            console.log(`    ✅ This order CAN be cancelled`);
             cancellableOrders.push({
               id: doc.id,
               order_id: doc.id,
@@ -1589,10 +1610,12 @@ async function handleCancelAction(customerData, visitorInfo) {
               paymentMethod: orderData.paymentMethod,
               paymentStatus: orderData.paymentStatus
             });
+          } else {
+            console.log(`    ❌ This order CANNOT be cancelled (status: ${status})`);
           }
         });
         
-        console.log(`✅ Found ${cancellableOrders.length} cancellable orders from users/${userId}/orders`);
+        console.log(`\n✅ Found ${cancellableOrders.length} cancellable orders from users/${userId}/orders`);
       } catch (firestoreError) {
         console.error('❌ Firestore query failed:', firestoreError.message);
         // Fallback to customerData
@@ -1609,9 +1632,13 @@ async function handleCancelAction(customerData, visitorInfo) {
     
     if (cancellableOrders.length === 0) {
       return {
-        type: "message",
-        text: "📦 No orders found that can be cancelled.\n\nOrders can only be cancelled if they are in 'Confirmed' or 'Processing' status.",
-        delay: 1000
+        action: "reply",
+        replies: [
+          {
+            text: "📦 No orders available for cancellation.\n\n✅ Orders can only be cancelled if they are in:\n• Pending\n• Confirmed\n• Processing\n\n❌ Orders that are shipped, delivered, or already cancelled cannot be cancelled."
+          }
+        ],
+        suggestions: ["🏠 Back to Menu"]
       };
     }
     
@@ -1624,7 +1651,7 @@ async function handleCancelAction(customerData, visitorInfo) {
         }
       ],
       suggestions: cancellableOrders.map(order => 
-        `Order ${order.id} | ${order.product_name} | ₹${order.total_amount}`
+        `❌ Cancel ${order.id} | ${order.product_name} | ₹${order.total_amount}`
       ).concat(["🏠 Back to Menu"])
     };
     
@@ -1714,7 +1741,7 @@ function handleOrderCancellation(order, visitorInfo) {
   console.log('  Items:', order.items?.length || 0);
   
   // Check if order is already shipped
-  if (order.status === 'shipped' || order.status === 'outForDelivery' || order.status === 'delivered') {
+  if (order.status === 'shipped' || order.status === 'out_for_delivery' || order.status === 'delivered') {
     console.log('  ❌ Order cannot be cancelled - already shipped/delivered');
     return {
       type: "message",
@@ -1723,81 +1750,74 @@ function handleOrderCancellation(order, visitorInfo) {
     };
   }
   
-  console.log('  ✅ Order is cancellable - generating form');
-  console.log('  Form will pre-fill:');
+  console.log('  ✅ Order is cancellable - triggering Form Controller');
+  console.log('  Form Controller: cancelform');
+  console.log('  Order data to pass:');
   console.log('    - Order ID:', order.id);
   console.log('    - Product:', order.items?.[0]?.productName || 'Product');
   console.log('    - Amount: ₹' + order.totalAmount);
   
-  // PRODUCTION: Return Zoho SalesIQ Form Controller JSON
-  // This will display a form in the chat for the user to fill
+  // PRODUCTION: Trigger the existing "cancelform" Form Controller in SalesIQ
+  // This will close the bot and connect to human agent with the form
   return {
-    type: "form",
-    title: "Cancel Order",
-    name: "cancel_order_form",
-    fields: [
-        {
-          name: "order_id",
-          label: "Order ID",
-          type: "text",
-          value: order.id,
-          readonly: true,
-          required: true
-        },
-        {
-          name: "product_name",
-          label: "Product",
-          type: "text",
-          value: order.items?.[0]?.productName || 'Product',
-          readonly: true
-        },
-        {
-          name: "total_amount",
-          label: "Order Amount",
-          type: "text",
-          value: `₹${order.totalAmount}`,
-          readonly: true
-        },
-        {
-          name: "cancellation_reason",
-          label: "Reason for Cancellation",
-          type: "textarea",
-          placeholder: "Please tell us why you want to cancel this order...",
-          required: true,
-          validation: {
-            maxLength: 500
-          }
-        },
-        {
-          name: "refund_method",
-          label: "Refund Method",
-          type: "select",
-          required: true,
-          options: [
-            { label: "Original Payment Method", value: "original_payment" },
-            { label: "Wallet Credit", value: "wallet" },
-            { label: "Store Credit", value: "store_credit" },
-            { label: "Bank Transfer", value: "bank_transfer" }
-          ]
-        },
-        {
-          name: "bank_details",
-          label: "Bank Account Details (if Bank Transfer selected)",
-          type: "textarea",
-          placeholder: "Account Number, IFSC Code, Account Holder Name",
-          required: false,
-          conditional: {
-            field: "refund_method",
-            value: "bank_transfer"
-          }
-        }
-      ],
-    action: {
-      type: "submit",
-      label: "Submit Cancellation",
-      name: "process_cancellation"
+  type: "form",
+  name: "cancelform",
+  title: "Cancel Order",
+  button_label: "Submit Cancellation",
+  inputs: [
+    {
+      type: "text",
+      name: "order_id",
+      label: "Order ID",
+      value: order.id,
+      mandatory: true,
+      editable: false
+    },
+    {
+      type: "text",
+      name: "product_name",
+      label: "Product",
+      value: order.items?.[0]?.productName || "Product",
+      mandatory: true,
+      editable: false
+    },
+    {
+      type: "text",
+      name: "amount_paid",
+      label: "Amount",
+      value: `₹${order.totalAmount}`,
+      mandatory: true,
+      editable: false
+    },
+    {
+      type: "select",
+      name: "cancellation_reason",
+      label: "Cancellation Reason",
+      mandatory: true,
+      options: [
+        { label: "Changed my mind", value: "changed_mind" },
+        { label: "Found better price", value: "better_price" },
+        { label: "Ordered by mistake", value: "mistake" },
+        { label: "Delivery too late", value: "late_delivery" },
+        { label: "Other", value: "other" }
+      ]
+    },
+    {
+      type: "select",
+      name: "refund_method",
+      label: "Refund Method",
+      mandatory: true,
+      options: [
+        { label: "Original Payment", value: "original_payment" },
+        { label: "Bank Transfer", value: "bank_transfer" },
+        { label: "Store Credit", value: "store_credit" }
+      ]
     }
-  };
+  ]
+};
+
+
+
 }
 
 // 🔄 HANDLE ORDER RETURN LOGIC
@@ -1839,7 +1859,7 @@ function getOrderStatusWithIcon(status) {
     'confirmed': '✅ Confirmed', 
     'processing': '🔄 Processing',
     'shipped': '🚚 Shipped',
-    'outForDelivery': '🏃 Out for Delivery',
+    'out_for_delivery': '🏃 Out for Delivery',
     'delivered': '✅ Delivered',
     'cancelled': '❌ Cancelled',
     'returned': '↩️ Returned'
@@ -2040,7 +2060,12 @@ app.post('/webhook', async (req, res) => {
       // ✅ SAFE extraction from SalesIQ payload
       const visitor = req.body.visitor || {};
       const message = req.body.message || {};
-      const messageText = message.text || '';
+      
+      // ✅ NORMALIZE MESSAGE TEXT FIRST (BEFORE USAGE)
+      const rawMessage = typeof message === 'string' ? message :
+                        typeof message.text === 'string' ? message.text :
+                        typeof req.body.text === 'string' ? req.body.text : '';
+      const messageText = rawMessage.toLowerCase().trim();
 
       let customerName =
         visitor.name ||
@@ -2058,109 +2083,269 @@ app.post('/webhook', async (req, res) => {
         hasInfo: true
       };
       
-      // ✅ SALESIQ FORM CONTROLLER TRIGGER (CORRECT WAY)
-if (messageText.startsWith('Order ')) {
-  const orderIdMatch = messageText.match(/Order\s+(ORD\d+)/);
-
-  if (!orderIdMatch) {
-    return res.status(200).json({
-      type: "message",
-      text: "❌ Invalid order selection."
-    });
-  }
-
-  const orderId = orderIdMatch[1];
-  console.log(`📦 Triggering Cancel Form for: ${orderId}`);
-
-  // ✅ THIS OPENS THE SALESIQ FORM UI DIRECTLY
-  return res.status(200).json({
-    type: "form",
-    title: `❌ Cancel Order ${orderId}`,
-    name: "cancel_order_form",   // ✅ MUST MATCH FORM CONTROLLER NAME IN SALESIQ
-    fields: [
-      {
-        name: "order_id",
-        label: "Order ID",
-        type: "text",
-        value: orderId,
-        readonly: true,
-        required: true
-      },
-      {
-        name: "cancellation_reason",
-        label: "Reason for Cancellation",
-        type: "textarea",
-        placeholder: "Why do you want to cancel this order?",
-        required: true,
-        validation: { maxLength: 500 }
-      },
-      {
-        name: "refund_method",
-        label: "Refund Method",
-        type: "select",
-        required: true,
-        options: [
-          { label: "Original Payment", value: "original_payment" },
-          { label: "Wallet Credit", value: "wallet" },
-          { label: "Bank Transfer", value: "bank_transfer" }
-        ]
-      },
-      {
-        name: "bank_details",
-        label: "Bank Details (if Bank Transfer)",
-        type: "textarea",
-        required: false,
-        conditional: {
-          field: "refund_method",
-          value: "bank_transfer"
-        }
-      }
-    ],
-    action: {
-      type: "submit",
-      label: "Submit Cancellation",
-      name: "process_cancellation"
-    }
-  });
-}
-
-
-      
-      // ✅ HANDLE MAIN MENU SUGGESTIONS
-      if (messageText === "❌ Cancel Order") {
-        const customerData = await getCustomerData(visitorEmail);
-        const cancelResponse = await handleCancelAction(customerData, visitorInfoForQuery);
-        
-        console.log('\n✅ ===== SENDING CANCEL ORDER RESPONSE =====');
-        console.log('Response Type:', cancelResponse.type);
-        console.log('Message:', cancelResponse.text);
-        console.log('Number of Buttons:', cancelResponse.buttons?.length || 0);
-        if (cancelResponse.buttons && cancelResponse.buttons.length > 0) {
-          console.log('Buttons:');
-          cancelResponse.buttons.forEach((btn, idx) => {
-            console.log(`  ${idx + 1}. Label: "${btn.label}", Name: "${btn.name}", Type: "${btn.type}"`);
+      // ✅ HANDLE MAIN MENU FIRST (before order selection)
+      if (messageText === "❌ cancel order" || (messageText.includes("cancel order") && !messageText.match(/(ord\d+)/i))) {
+        try {
+          console.log('🔍 User clicked Cancel Order - fetching customer data...');
+          const customerData = await getCustomerData(visitorEmail);
+          console.log('✅ Customer data fetched, calling handleCancelAction...');
+          
+          const cancelResponse = await handleCancelAction(customerData, visitorInfoForQuery);
+          
+          console.log('\n✅ ===== SENDING CANCEL ORDER RESPONSE =====');
+          console.log('Response Type:', cancelResponse.type || cancelResponse.action);
+          console.log('Message:', cancelResponse.text || cancelResponse.replies?.[0]?.text);
+          console.log('Number of Suggestions:', cancelResponse.suggestions?.length || 0);
+          if (cancelResponse.suggestions && cancelResponse.suggestions.length > 0) {
+            console.log('Suggestions:');
+            cancelResponse.suggestions.forEach((sug, idx) => {
+              console.log(`  ${idx + 1}. "${sug}"`);
+            });
+          }
+          console.log('\n📤 Full Response JSON:');
+          console.log(JSON.stringify(cancelResponse, null, 2));
+          console.log('=======================================\n');
+          
+          return res.status(200).json(cancelResponse);
+        } catch (error) {
+          console.error('❌ Error in cancel order handler:', error);
+          return res.status(200).json({
+            action: "reply",
+            replies: [
+              {
+                text: "❌ Error loading orders. Please try again later."
+              }
+            ],
+            suggestions: ["🏠 Back to Menu"]
           });
         }
-        console.log('\n📤 Full Response JSON:');
-        console.log(JSON.stringify(cancelResponse, null, 2));
-        console.log('=======================================\n');
-        
-        return res.status(200).json(cancelResponse);
       }
       
-      if (messageText === "🔄 Return Order") {
+      // ✅ HANDLE ORDER SELECTION FROM SUGGESTIONS (Cancel or Return with Order ID)
+      const orderIdMatch = messageText.match(/(ord\d+)/i);
+      if (orderIdMatch && (messageText.includes('cancel') || messageText.includes('return') || messageText.startsWith('❌') || messageText.startsWith('🔄'))) {
+        // Detect action type
+        const isCancel = messageText.includes('cancel') || messageText.startsWith('❌');
+        const isReturn = messageText.includes('return') || messageText.startsWith('🔄');
+
+        const orderId = orderIdMatch[1].toUpperCase();
+        console.log(`\n📦 ===== ORDER SELECTED =====`);
+        console.log('Order ID:', orderId);
+        console.log('Action:', isCancel ? 'CANCEL' : 'RETURN');
+        console.log('Customer:', visitorEmail);
+
+        // Fetch full order data from Firestore
+        const customerData = await getCustomerData(visitorEmail);
+        const order = customerData.orders.find(o => o.id === orderId);
+
+        if (!order) {
+          console.log('❌ Order not found in customer data');
+          return res.status(200).json({
+            type: "message",
+            text: "❌ Order not found. Please try again."
+          });
+        }
+
+        console.log('✅ Order Found:');
+        console.log('  Product:', order.items?.[0]?.productName || 'Product');
+        console.log('  Amount: ₹' + order.totalAmount);
+        console.log('  Status:', order.status);
+
+        // Trigger SalesIQ Form Controller
+        const actionText = isCancel ? 'cancellation' : 'return';
+        const actionEmoji = isCancel ? '❌' : '🔄';
+        
+        if (isCancel) {
+          // Return SalesIQ Form Controller format (matching Zoho documentation)
+          console.log('📋 Returning SalesIQ Form for cancellation');
+          
+          // Build inputs array (SalesIQ uses "inputs" not "fields")
+          const inputs = [
+            {
+              type: "text",
+              name: "order_id",
+              label: "Order ID",
+              value: orderId,
+              hint: "Order identification number",
+              mandatory: true,
+              editable: false
+            },
+            {
+              type: "text",
+              name: "product_name",
+              label: "Product Name",
+              value: order.items?.[0]?.productName || 'Product',
+              hint: "Product being cancelled",
+              mandatory: true,
+              editable: false
+            },
+            {
+              type: "text",
+              name: "amount_paid",
+              label: "Amount Paid",
+              value: `₹${order.totalAmount}`,
+              hint: "Total amount to be refunded",
+              mandatory: true,
+              editable: false
+            },
+            {
+              type: "dynamic_select",
+              name: "cancellation_reason",
+              label: "Cancellation Reason",
+              hint: "Why do you want to cancel?",
+              placeholder: "Select reason",
+              mandatory: true,
+              trigger_on_change: true,
+              options: [
+                {
+                  label: "Changed My Mind",
+                  value: "changed_mind"
+                },
+                {
+                  label: "Found Better Price",
+                  value: "better_price"
+                },
+                {
+                  label: "Ordered By Mistake",
+                  value: "mistake"
+                },
+                {
+                  label: "Delivery Too Late",
+                  value: "late_delivery"
+                },
+                {
+                  label: "Other Reason",
+                  value: "other"
+                }
+              ]
+            },
+            {
+              type: "select",
+              name: "refund_method",
+              label: "Refund Method",
+              hint: "How would you like to receive the refund?",
+              placeholder: "Select refund method",
+              mandatory: true,
+              trigger_on_change: true,
+              options: [
+                {
+                  label: "Original Payment Method",
+                  value: "original_payment"
+                },
+                {
+                  label: "Bank Transfer",
+                  value: "bank_transfer"
+                },
+                {
+                  label: "Store Credit",
+                  value: "store_credit"
+                }
+              ]
+            }
+          ];
+          
+          const response = {
+            type: "form",
+            name: "cancelform",
+            title: "Cancel Order",
+            hint: "Please provide cancellation details",
+            button_label: "Submit Cancellation",
+            inputs: inputs
+          };
+
+          console.log('\n📤 Sending SalesIQ Form:');
+          console.log(JSON.stringify(response, null, 2));
+          console.log('=======================================\n');
+
+          return res.status(200).json(response);
+        } else {
+          // For return, show inline suggestions
+          const response = {
+            action: "reply",
+            replies: [
+              {
+                text: `${actionEmoji} Order ${actionText.toUpperCase()} Request\n\n📦 Order Details:\n🆔 Order ID: ${orderId}\n📱 Product: ${order.items?.[0]?.productName || 'Product'}\n💰 Amount: ₹${order.totalAmount}\n📊 Status: ${order.status}\n\n❓ Please select your ${actionText} reason:`
+              }
+            ],
+            suggestions: [
+              "Product defective",
+              "Wrong item received",
+              "Product damaged",
+              "Not as described",
+              "Other reason"
+            ]
+          };
+
+          console.log(`\n📤 Sending ${actionText.toUpperCase()} Form:`);
+          console.log(JSON.stringify(response, null, 2));
+          console.log('=======================================\n');
+
+          return res.status(200).json(response);
+        }
+      }
+
+      // ✅ HANDLE CANCELLATION REASON SELECTION
+      const cancellationReasons = [
+        "changed my mind",
+        "found better price", 
+        "ordered by mistake",
+        "delivery too late",
+        "other reason"
+      ];
+      
+      if (cancellationReasons.some(reason => messageText.includes(reason))) {
+        console.log('\n💬 Cancellation reason received:', messageText);
+        
+        // Get the last order from customer data (the one they just selected)
+        const customerData = await getCustomerData(visitorEmail);
+        const lastOrder = customerData.orders?.[0]; // Most recent order
+        
+        if (lastOrder) {
+          // Process cancellation immediately
+          const cancellationData = {
+            order_id: lastOrder.id,
+            user_id: visitorEmail,
+            action: 'cancel',
+            cancellation_reason: messageText,
+            refund_method: 'original_payment',
+            idempotency_token: `cancel_${Date.now()}_${lastOrder.id}`
+          };
+          
+          const result = await processCancellation(cancellationData);
+          
+          if (result.success) {
+            return res.status(200).json({
+              action: "reply",
+              replies: [
+                {
+                  text: `✅ Order ${lastOrder.id} has been cancelled successfully!\n\n💰 Refund: ₹${lastOrder.totalAmount}\n📄 Reference: ${result.refundReference}\n🔁 Method: Original Payment\n\n⏱️ Refund will be processed within 5-7 business days.`
+                }
+              ],
+              suggestions: ["🏠 Back to Menu"]
+            });
+          }
+        }
+        
+        return res.status(200).json({
+          type: "message",
+          text: "❌ Unable to process cancellation. Please try again or contact support."
+        });
+      }
+
+      
+      if (messageText === "🔄 return order" || messageText.includes("return order")) {
         const customerData = await getCustomerData(visitorEmail);
         const returnResponse = handleReturnAction(customerData, visitorInfoForQuery);
         return res.status(200).json(returnResponse);
       }
       
-      if (messageText === "📋 Other Options") {
+      if (messageText === "📋 other options" || messageText.includes("other options")) {
         const customerData = await getCustomerData(visitorEmail);
         const otherResponse = handleOtherAction(customerData, visitorInfoForQuery);
         return res.status(200).json(otherResponse);
       }
       
-      if (messageText === "🏠 Back to Menu") {
+      if (messageText === "🏠 back to menu" || messageText.includes("back to menu")) {
         // Return to main menu
         const response = {
           action: "reply",
@@ -2187,8 +2372,8 @@ if (messageText.startsWith('Order ')) {
           }
         ],
         suggestions: [
-          "🔄 Return Order",
           "❌ Cancel Order",
+          "🔄 Return Order",
           "📋 Other Options"
         ]
       };
@@ -2281,35 +2466,6 @@ if (messageText.startsWith('Order ')) {
       }
     }
 
-    // ✅ HANDLE NORMAL USER CHAT MESSAGE (only for specific keywords)
-    const rawMessage =
-  typeof requestData.message === 'string'
-    ? requestData.message
-    : typeof requestData.text === 'string'
-    ? requestData.text
-    : typeof requestData.chat_message === 'string'
-    ? requestData.chat_message
-    : typeof requestData.message?.text === 'string'
-    ? requestData.message.text
-    : '';
-    const messageText = rawMessage.toLowerCase().trim();
-
-    console.log('✅ Normalized Message Text:', messageText);    
-    const triggerKeywords = ['hi', 'hello', 'menu', 'start'];
-    const shouldShowMenu = triggerKeywords.includes(messageText);
-
-    if (shouldShowMenu) {
-      console.log('💬 USER TRIGGERED MENU WITH:', messageText);
-
-      if (!visitorInfo.email || visitorInfo.email === 'Not provided') {
-        visitorInfo.email = 'demo@customer.com';
-        visitorInfo.name = 'Demo Customer';
-      }
-
-      const autoButtons = createAutoActionButtonsMessage(visitorInfo);
-      return res.status(200).json(autoButtons);
-    }
-
     // ✅ DEFAULT FALLBACK → SHOW CUSTOMER WIDGET
     if (!visitorInfo.email || visitorInfo.email === 'Not provided') {
       visitorInfo.email = 'demo@customer.com';
@@ -2380,7 +2536,7 @@ app.post('/api/get-cancellable-orders', async (req, res) => {
     console.log('\n📥 ===== GET CANCELLABLE ORDERS API =====');
     
     // Validate webhook secret
-    const receivedSecret = req.headers['x-webhook-secret'] || req.headers['x-webhook-secret'.toLowerCase()];
+    const receivedSecret = req.headers['x-webhook-secret'];
     if (!receivedSecret || receivedSecret !== WEBHOOK_SECRET) {
       return res.status(401).json({
         success: false,
@@ -2512,7 +2668,8 @@ app.post('/salesiq/form-submit', async (req, res) => {
       req.body.visitor_info?.email ||
       req.body.email;
     const normalizedAction = action || 'cancel';
-    const normalizedReason = cancellation_reason || reason;
+    const normalizedReason = cancellation_reason || reason || req.body.cancellation_reason;
+
     const normalizedRefundMethod = refund_method || refund_details?.refund_method || 'original_payment';
     const normalizedBankDetails = bank_details || refund_details?.refund_reference_info;
     
@@ -2779,3 +2936,100 @@ process.on('SIGINT', () => {
   console.log('\n👋 Shutting down webhook server...');
   process.exit(0);
 });
+
+/*
+===============================================
+🧪 CURL TEST COMMANDS
+===============================================
+
+1️⃣ HEALTH CHECK
+curl -X GET http://localhost:3000/
+
+2️⃣ CANCEL ORDER SELECTION (Simulate user clicking "Cancel Order")
+curl -X POST http://localhost:3000/webhook \
+  -H "Content-Type: application/json" \
+  -d '{
+    "handler": "message",
+    "operation": "message",
+    "visitor": {
+      "name": "Arjun",
+      "email": "arjunfree256@gmail.com"
+    },
+    "message": {
+      "text": "❌ Cancel Order"
+    }
+  }'
+
+3️⃣ ORDER SELECTION (Simulate user clicking order button)
+curl -X POST http://localhost:3000/webhook \
+  -H "Content-Type: application/json" \
+  -d '{
+    "handler": "message",
+    "operation": "message",
+    "visitor": {
+      "name": "Arjun",
+      "email": "arjunfree256@gmail.com"
+    },
+    "message": {
+      "text": "Order ORD1765130519686 | Bluetooth Speaker | ₹3798"
+    }
+  }'
+
+4️⃣ FORM SUBMIT - CANCEL ORDER
+curl -X POST http://localhost:3000/salesiq/form-submit \
+  -H "Content-Type: application/json" \
+  -H "x-webhook-secret: your_shared_secret_here_change_in_production" \
+  -d '{
+    "order_id": "ORD1765130519686",
+    "user_id": "arjunfree256@gmail.com",
+    "action": "cancel",
+    "cancellation_reason": "Changed my mind",
+    "refund_method": "original_payment",
+    "idempotency_token": "cancel_1234567890_ORD1765130519686"
+  }'
+
+5️⃣ FORM SUBMIT - RETURN ORDER
+curl -X POST http://localhost:3000/salesiq/form-submit \
+  -H "Content-Type: application/json" \
+  -H "x-webhook-secret: your_shared_secret_here_change_in_production" \
+  -d '{
+    "order_id": "ORD1765130519686",
+    "user_id": "arjunfree256@gmail.com",
+    "action": "return",
+    "cancellation_reason": "Product defective",
+    "refund_method": "bank_transfer",
+    "bank_details": "Account: 1234567890, IFSC: HDFC0001234",
+    "idempotency_token": "return_1234567890_ORD1765130519686"
+  }'
+
+6️⃣ GET CANCELLABLE ORDERS (Flutter API)
+curl -X POST http://localhost:3000/api/get-cancellable-orders \
+  -H "Content-Type: application/json" \
+  -H "x-webhook-secret: your_shared_secret_here_change_in_production" \
+  -d '{
+    "customer_email": "arjunfree256@gmail.com"
+  }'
+
+7️⃣ RETURN ORDER SELECTION
+curl -X POST http://localhost:3000/webhook \
+  -H "Content-Type: application/json" \
+  -d '{
+    "handler": "message",
+    "operation": "message",
+    "visitor": {
+      "name": "Arjun",
+      "email": "arjunfree256@gmail.com"
+    },
+    "message": {
+      "text": "🔄 Return Order"
+    }
+  }'
+
+===============================================
+📝 NOTES:
+- Replace localhost:3000 with your actual server URL
+- Update x-webhook-secret header with your actual secret
+- Update order_id and customer_email with real values
+- For production, use HTTPS endpoints
+===============================================
+*/
