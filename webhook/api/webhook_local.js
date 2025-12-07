@@ -549,12 +549,17 @@ async function processCancellation(cancellationData) {
     const refundReference = `REF${Date.now()}`;
     
     // Update order status in Firestore
-    const success = await updateOrderStatusInFirestore(cancellationData.order_id, 'cancelled', {
-      cancellationReason: cancellationData.reason,
-      refundReference: refundReference,
-      refundDetails: cancellationData.refund_details,
-      cancelledAt: admin.firestore.FieldValue.serverTimestamp()
-    });
+    const success = await updateOrderStatusInFirestore(
+      cancellationData.order_id,
+      'cancelled',
+      cancellationData.user_id,
+      {
+        cancelReason: cancellationData.reason,
+        refundReference: refundReference,
+        refundDetails: cancellationData.refund_details,
+        cancelledAt: admin.firestore.FieldValue.serverTimestamp()
+      }
+    );
     
     if (success) {
       // Log cancellation activity
@@ -586,17 +591,21 @@ async function processReturn(returnData) {
     const returnReference = `RET${Date.now()}`;
     
     // Update order status in Firestore
-    const success = await updateOrderStatusInFirestore(returnData.order_id, 'returned', {
-      returnReason: returnData.reason,
-      returnReference: returnReference,
-      returnItems: returnData.return_items,
-      returnCondition: returnData.condition,
-      refundDetails: returnData.refund_details,
-      returnedAt: admin.firestore.FieldValue.serverTimestamp()
-    });
+    const success = await updateOrderStatusInFirestore(
+      returnData.order_id,
+      'returned',
+      returnData.user_id,
+      {
+        returnReason: returnData.reason,
+        returnReference: returnReference,
+        returnItems: returnData.return_items,
+        returnCondition: returnData.condition,
+        refundDetails: returnData.refund_details,
+        returnedAt: admin.firestore.FieldValue.serverTimestamp()
+      }
+    );
     
     if (success) {
-      // Log return activity
       await saveIssueToFirestore({
         id: `RETURN_${Date.now()}`,
         customerEmail: returnData.user_id,
@@ -646,11 +655,13 @@ async function getCustomerData(customerEmail) {
         
         console.log(`✅ Found user profile: ${customerProfile.name} (ID: ${userId})`);
         
-        // Step 2: Get customer orders
-        const ordersSnapshot = await db.collection('orders')
-          .where('customerEmail', '==', customerEmail)
-          .orderBy('orderDate', 'desc')
-          .get();
+        // ✅ Step 2: Get customer orders from users/{userId}/orders
+const ordersSnapshot = await db.collection('users')
+  .doc(userId)
+  .collection('orders')
+  .orderBy('orderDate', 'desc')
+  .get();
+
         
         const orders = [];
         ordersSnapshot.forEach(doc => {
@@ -824,9 +835,9 @@ function calculateComprehensiveAnalytics(orders, cartItems, favorites, customerP
 // � MOCK CUSTOMER DATA (Fallback)
 function getMockCustomerData(customerEmail) {
   const mockCustomerData = {
-    'priya@gmail.com': {
+    'priya2@gmail.com': {
       customerName: 'Priya Sharma',
-      customerEmail: 'priya@gmail.com',
+      customerEmail: 'priya2@gmail.com',
     },
     'arjunfree256@gmail.com': {
       customerName: 'Arjun',
@@ -1071,10 +1082,39 @@ async function getProductsFromFirestore() {
   }
 }
 
-// 💾 SAVE ORDER TO FIRESTORE
+// � HELPER: Get userId from email
+async function getUserIdFromEmail(email) {
+  try {
+    const userSnapshot = await db.collection('users')
+      .where('email', '==', email)
+      .limit(1)
+      .get();
+    
+    if (userSnapshot.empty) {
+      console.log(`⚠️ No user found with email: ${email}`);
+      return null;
+    }
+    
+    const userId = userSnapshot.docs[0].id;
+    console.log(`✅ Found user ID: ${userId} for email: ${email}`);
+    return userId;
+  } catch (error) {
+    console.error('❌ Error getting user ID:', error);
+    return null;
+  }
+}
+
+// � SAVE ORDER TO FIRESTORE (as subcollection under user)
 async function saveOrderToFirestore(orderData) {
   try {
     console.log(`💾 Saving order to Firestore: ${orderData.id}`);
+    
+    // Get userId from customerEmail
+    const userId = await getUserIdFromEmail(orderData.customerEmail);
+    if (!userId) {
+      console.error('❌ Cannot save order: User not found');
+      return false;
+    }
     
     const orderDoc = {
       ...orderData,
@@ -1083,8 +1123,9 @@ async function saveOrderToFirestore(orderData) {
       updatedAt: admin.firestore.FieldValue.serverTimestamp()
     };
     
-    await db.collection('orders').doc(orderData.id).set(orderDoc);
-    console.log(`✅ Order saved successfully: ${orderData.id}`);
+    // ✅ NEW: Save to users/{userId}/orders/{orderId}
+    await db.collection('users').doc(userId).collection('orders').doc(orderData.id).set(orderDoc);
+    console.log(`✅ Order saved successfully: users/${userId}/orders/${orderData.id}`);
     return true;
   } catch (error) {
     console.error('❌ Error saving order:', error);
@@ -1112,10 +1153,17 @@ async function saveIssueToFirestore(issueData) {
   }
 }
 
-// 🔄 UPDATE ORDER STATUS IN FIRESTORE
-async function updateOrderStatusInFirestore(orderId, newStatus, additionalData = {}) {
+// 🔄 UPDATE ORDER STATUS IN FIRESTORE (in users subcollection)
+async function updateOrderStatusInFirestore(orderId, newStatus, customerEmail, additionalData = {}) {
   try {
     console.log(`🔄 Updating order status in Firestore: ${orderId} -> ${newStatus}`);
+    
+    // Get userId from customerEmail
+    const userId = await getUserIdFromEmail(customerEmail);
+    if (!userId) {
+      console.error('❌ Cannot update order: User not found');
+      return false;
+    }
     
     const updateData = {
       status: newStatus,
@@ -1123,8 +1171,9 @@ async function updateOrderStatusInFirestore(orderId, newStatus, additionalData =
       ...additionalData
     };
     
-    await db.collection('orders').doc(orderId).update(updateData);
-    console.log(`✅ Order status updated successfully: ${orderId}`);
+    // ✅ NEW: Update in users/{userId}/orders/{orderId}
+    await db.collection('users').doc(userId).collection('orders').doc(orderId).update(updateData);
+    console.log(`✅ Order status updated successfully: users/${userId}/orders/${orderId}`);
     return true;
   } catch (error) {
     console.error('❌ Error updating order status:', error);
@@ -1496,33 +1545,97 @@ function handleReturnAction(customerData, visitorInfo) {
   };
 }
 
-// ❌ HANDLE CANCEL ACTION  
-function handleCancelAction(customerData, visitorInfo) {
-  const orders = customerData.orders || [];
-  
-  // Filter orders that can be cancelled (not shipped yet)
-  const cancellableOrders = orders.filter(order => 
-    order.status === 'confirmed' || order.status === 'processing'
-  );
-  
-  if (cancellableOrders.length === 0) {
+// ❌ HANDLE CANCEL ACTION - PRODUCTION READY WITH FIRESTORE
+async function handleCancelAction(customerData, visitorInfo) {
+  try {
+    console.log('🔍 Fetching cancellable orders from Firestore for:', visitorInfo.email);
+    
+    let cancellableOrders = [];
+    
+    // PRODUCTION: Query Firestore for cancellable orders from users subcollection
+    if (firebaseEnabled && db) {
+      try {
+        // Get userId from email first
+        const userId = await getUserIdFromEmail(visitorInfo.email);
+        if (!userId) {
+          console.log('⚠️ No user found with email:', visitorInfo.email);
+          return {
+            type: "message",
+            text: "📦 No orders found for your account.",
+            delay: 1000
+          };
+        }
+        
+        // ✅ NEW: Query from users/{userId}/orders subcollection
+        const ordersSnapshot = await db.collection('users')
+          .doc(userId)
+          .collection('orders')
+          .orderBy('orderDate', 'desc')
+          .get();
+        
+        ordersSnapshot.forEach(doc => {
+          const orderData = doc.data();
+          const status = orderData.status?.toString().toLowerCase().split('.').pop() || '';
+          
+          // Only include orders that can be cancelled
+          if (status === 'confirmed' || status === 'processing' || status === 'pending') {
+            cancellableOrders.push({
+              id: doc.id,
+              order_id: doc.id,
+              product_name: orderData.items?.[0]?.productName || 'Product',
+              total_amount: orderData.totalAmount || 0,
+              status: status,
+              orderDate: orderData.orderDate?.toDate?.()?.toISOString() || orderData.orderDate,
+              paymentMethod: orderData.paymentMethod,
+              paymentStatus: orderData.paymentStatus
+            });
+          }
+        });
+        
+        console.log(`✅ Found ${cancellableOrders.length} cancellable orders from users/${userId}/orders`);
+      } catch (firestoreError) {
+        console.error('❌ Firestore query failed:', firestoreError.message);
+        // Fallback to customerData
+        cancellableOrders = (customerData.orders || []).filter(order => 
+          order.status === 'confirmed' || order.status === 'processing'
+        );
+      }
+    } else {
+      // Fallback: use customerData
+      cancellableOrders = (customerData.orders || []).filter(order => 
+        order.status === 'confirmed' || order.status === 'processing'
+      );
+    }
+    
+    if (cancellableOrders.length === 0) {
+      return {
+        type: "message",
+        text: "📦 No orders found that can be cancelled.\n\nOrders can only be cancelled if they are in 'Confirmed' or 'Processing' status.",
+        delay: 1000
+      };
+    }
+    
+    // PRODUCTION: Return SalesIQ format with suggestions (displays as blue chips)
+    return {
+      action: "reply",
+      replies: [
+        {
+          text: `📦 You have ${cancellableOrders.length} order(s) that can be cancelled.\n\nSelect an order to proceed with cancellation:`
+        }
+      ],
+      suggestions: cancellableOrders.map(order => 
+        `Order ${order.id} | ${order.product_name} | ₹${order.total_amount}`
+      ).concat(["🏠 Back to Menu"])
+    };
+    
+  } catch (error) {
+    console.error('❌ Error in handleCancelAction:', error);
     return {
       type: "message",
-      text: "📦 No orders found that can be cancelled. Orders can only be cancelled before shipping.",
+      text: "❌ Error loading orders. Please try again.",
       delay: 1000
     };
   }
-  
-  return {
-    type: "message",
-    text: "📦 Here are your orders that can be cancelled. Click on an order:",
-    delay: 1000,
-    buttons: cancellableOrders.map(order => ({
-      label: `Order ${order.id} - ₹${order.totalAmount}`,
-      name: `cancel_order_${order.id}`,
-      type: "postback"
-    }))
-  };
 }
 
 // 📋 HANDLE OTHER ACTION
@@ -1558,11 +1671,29 @@ function handleOtherAction(customerData, visitorInfo) {
 
 // 🎯 HANDLE SPECIFIC ORDER ACTIONS
 async function handleOrderAction(action, orderId, visitorInfo) {
+  console.log(`\n🎯 handleOrderAction called`);
+  console.log('  Action:', action);
+  console.log('  Order ID:', orderId);
+  console.log('  Visitor Email:', visitorInfo.email);
+  
   const customerData = await getCustomerData(visitorInfo.email);
+  console.log('  Total Orders Found:', customerData.orders?.length || 0);
+  
   const order = customerData.orders.find(o => o.id === orderId);
   
   if (!order) {
+    console.log('  ❌ Order not found in customer data');
+    console.log('  Available Order IDs:', customerData.orders?.map(o => o.id).join(', ') || 'None');
     return createErrorResponse('Order not found');
+  }
+  
+  console.log('  ✅ Order Found:');
+  console.log('    ID:', order.id);
+  console.log('    Total Amount:', order.totalAmount);
+  console.log('    Status:', order.status);
+  console.log('    Items:', order.items?.length || 0);
+  if (order.items && order.items.length > 0) {
+    console.log('    First Item:', order.items[0].productName, '- ₹' + order.items[0].price);
   }
   
   if (action.startsWith('cancel_order_')) {
@@ -1574,52 +1705,98 @@ async function handleOrderAction(action, orderId, visitorInfo) {
   return createErrorResponse('Unknown order action');
 }
 
-// ❌ HANDLE ORDER CANCELLATION LOGIC
+// ❌ HANDLE ORDER CANCELLATION LOGIC - SHOW FORM CONTROLLER
 function handleOrderCancellation(order, visitorInfo) {
+  console.log(`\n📋 handleOrderCancellation called`);
+  console.log('  Order ID:', order.id);
+  console.log('  Order Status:', order.status);
+  console.log('  Total Amount:', order.totalAmount);
+  console.log('  Items:', order.items?.length || 0);
+  
   // Check if order is already shipped
   if (order.status === 'shipped' || order.status === 'outForDelivery' || order.status === 'delivered') {
+    console.log('  ❌ Order cannot be cancelled - already shipped/delivered');
     return {
       type: "message",
-      text: `📦 Order ${order.id} has already been shipped, so it cannot be cancelled. You can request a return instead.`,
-      delay: 1000,
-      buttons: [
+      text: `📦 Order ${order.id} has already been shipped, so it cannot be cancelled.\n\nYou can request a return instead.`,
+      delay: 1000
+    };
+  }
+  
+  console.log('  ✅ Order is cancellable - generating form');
+  console.log('  Form will pre-fill:');
+  console.log('    - Order ID:', order.id);
+  console.log('    - Product:', order.items?.[0]?.productName || 'Product');
+  console.log('    - Amount: ₹' + order.totalAmount);
+  
+  // PRODUCTION: Return Zoho SalesIQ Form Controller JSON
+  // This will display a form in the chat for the user to fill
+  return {
+    type: "form",
+    title: "Cancel Order",
+    name: "cancel_order_form",
+    fields: [
         {
-          label: "🔄 Request Return",
-          name: `return_order_${order.id}`,
-          type: "postback"
+          name: "order_id",
+          label: "Order ID",
+          type: "text",
+          value: order.id,
+          readonly: true,
+          required: true
         },
         {
-          label: "🏠 Back to Menu",
-          name: "back_to_menu",
-          type: "postback"
+          name: "product_name",
+          label: "Product",
+          type: "text",
+          value: order.items?.[0]?.productName || 'Product',
+          readonly: true
+        },
+        {
+          name: "total_amount",
+          label: "Order Amount",
+          type: "text",
+          value: `₹${order.totalAmount}`,
+          readonly: true
+        },
+        {
+          name: "cancellation_reason",
+          label: "Reason for Cancellation",
+          type: "textarea",
+          placeholder: "Please tell us why you want to cancel this order...",
+          required: true,
+          validation: {
+            maxLength: 500
+          }
+        },
+        {
+          name: "refund_method",
+          label: "Refund Method",
+          type: "select",
+          required: true,
+          options: [
+            { label: "Original Payment Method", value: "original_payment" },
+            { label: "Wallet Credit", value: "wallet" },
+            { label: "Store Credit", value: "store_credit" },
+            { label: "Bank Transfer", value: "bank_transfer" }
+          ]
+        },
+        {
+          name: "bank_details",
+          label: "Bank Account Details (if Bank Transfer selected)",
+          type: "textarea",
+          placeholder: "Account Number, IFSC Code, Account Holder Name",
+          required: false,
+          conditional: {
+            field: "refund_method",
+            value: "bank_transfer"
+          }
         }
-      ]
-    };
-  }
-  
-  // Check payment status and method
-  if (order.paymentStatus === 'paid') {
-    // Payment done - refund will be processed
-    const refundAmount = order.totalAmount;
-    return {
-      type: "message",
-      text: `✅ Order ${order.id} cancelled successfully!\n\n💰 Refund Amount: ₹${refundAmount}\n📅 Refund will be processed within 3-5 business days to your original payment method.\n\n📧 You will receive a confirmation email shortly.`,
-      delay: 1500
-    };
-  } else if (order.paymentMethod === 'Cash on Delivery' || order.paymentStatus === 'pending') {
-    // Pay on delivery or pending payment - simple cancellation
-    return {
-      type: "message",
-      text: `✅ Order ${order.id} cancelled successfully!\n\n💡 Since this was a Cash on Delivery order, no refund processing is needed.\n\n📧 You will receive a confirmation email shortly.`,
-      delay: 1500
-    };
-  }
-  
-  // Default cancellation message
-  return {
-    type: "message",
-    text: `✅ Order ${order.id} has been cancelled successfully!`,
-    delay: 1000
+      ],
+    action: {
+      type: "submit",
+      label: "Submit Cancellation",
+      name: "process_cancellation"
+    }
   };
 }
 
@@ -1674,67 +1851,6 @@ function getIssueIcon(status) {
   return status === 'Open' ? '🔴' : '✅';
 }
 
-// 🔄 HANDLE CANCEL ORDER
-async function handleCancelOrder(req, res) {
-  try {
-    console.log('📝 Processing cancel order request');
-    const formData = req.body;
-    
-    // Generate refund reference
-    const refundReference = `REF${Date.now()}`;
-    
-    // Simulate processing
-    const response = {
-      success: true,
-      orderId: formData.order_id,
-      action: 'cancel',
-      refundDetails: {
-        ...formData.refund_details,
-        refundReference: refundReference,
-        refundDate: new Date().toISOString(),
-        status: 'processed'
-      },
-      message: 'Order cancelled successfully'
-    };
-    
-    console.log('✅ Cancel order processed:', response);
-    return res.status(200).json(response);
-  } catch (error) {
-    console.error('❌ Cancel order error:', error);
-    return res.status(500).json({ error: 'Failed to process cancellation' });
-  }
-}
-
-// 🔄 HANDLE RETURN ORDER
-async function handleReturnOrder(req, res) {
-  try {
-    console.log('📝 Processing return order request');
-    const formData = req.body;
-    
-    // Generate refund reference
-    const refundReference = `REF${Date.now()}`;
-    
-    // Simulate processing
-    const response = {
-      success: true,
-      orderId: formData.order_id,
-      action: 'return',
-      refundDetails: {
-        ...formData.refund_details,
-        refundReference: refundReference,
-        refundDate: new Date().toISOString(),
-        status: 'processed'
-      },
-      message: 'Order returned successfully'
-    };
-    
-    console.log('✅ Return order processed:', response);
-    return res.status(200).json(response);
-  } catch (error) {
-    console.error('❌ Return order error:', error);
-    return res.status(500).json({ error: 'Failed to process return' });
-  }
-}
 
 // 📡 HANDLE SALESIQ NOTIFICATIONS
 async function handleNotification(req, res) {
@@ -1780,8 +1896,7 @@ app.get('/', (req, res) => {
     timestamp: new Date().toISOString(),
     endpoints: {
       webhook: '/webhook',
-      cancel: '/orders/:orderId/cancel',
-      return: '/orders/:orderId/return',
+      formSubmit: '/salesiq/form-submit',
       notifications: '/api/notifications'
     },
     github: 'https://github.com/ArjunJr05/webhook'
@@ -1881,158 +1996,350 @@ app.post('/api/button-click', async (req, res) => {
   }
 });
 
-// Main webhook endpoint
 app.post('/webhook', async (req, res) => {
   try {
-    console.log('\n📥 ===== LOCAL WEBHOOK =====');
-    console.log('Timestamp:', new Date().toISOString());
-    console.log('Method:', req.method);
-    console.log('Headers:', req.headers);
+    console.log('\n\n🔔 ===== WEBHOOK CALLED =====');
+    console.log('⏰ Timestamp:', new Date().toISOString());
+    console.log('📍 From:', req.headers['x-forwarded-for'] || req.ip);
+    console.log('🔐 Signature:', req.headers['x-siqsignature'] ? 'Present' : 'Missing');
+    console.log('\n📦 REQUEST BODY:');
+    console.log(JSON.stringify(req.body, null, 2));
+    console.log('\n');
 
     const requestData = req.body || {};
-    const handler = requestData.handler || requestData.event;
+    const handler = requestData.handler;
     const context = requestData.context || {};
     const formData = requestData.form_data;
     const formName = requestData.form_name;
-
-    console.log('Request Data:', JSON.stringify(requestData, null, 2));
-
+    
     const visitorInfo = extractVisitorInfo(context);
-    
-    // Handle form submissions
-    if (formData && formName) {
-      console.log('📋 Form submission detected:', formName);
-      const formResponse = await processFormSubmission(formName, formData, visitorInfo);
-      return res.status(200).json(formResponse);
+
+    if (handler === "trigger" || handler === "triggerhandler") {
+      console.log("✅ Form Controller triggerhandler test - sending ACK");
+      return res.status(200).json({
+        handler: "triggerhandler",
+        status: "success",
+        message: "Webhook is active and ready"
+      });
     }
-    
-    // Handle button actions (postback)
-    if (requestData.postback) {
-      const action = requestData.postback.name;
-      console.log('🔘 Button action detected:', action);
+
+    if (handler === "message" && !req.body.visitor && !req.body.operation) {
+      // This is a Form Controller TEST call (messagehandler test)
+      console.log("✅ Form Controller messagehandler test - sending ACK");
+      return res.status(200).json({
+        handler: "messagehandler",
+        status: "success",
+        message: "Webhook can handle messages"
+      });
+    }
+
+    // ✅ HANDLE REAL USER MESSAGES (from bot or mobile app)
+    if (req.body.handler === "message" || req.body.operation === "message") {
+      console.log("✅ Real user message received");
+
+      // ✅ SAFE extraction from SalesIQ payload
+      const visitor = req.body.visitor || {};
+      const message = req.body.message || {};
+      const messageText = message.text || '';
+
+      let customerName =
+        visitor.name ||
+        visitor.email?.split("@")[0] ||
+        "Guest";
+
+      console.log("👤 Customer Name:", customerName);
+      console.log("💬 Message Text:", messageText);
       
-      // Handle specific order actions
-      if (action.startsWith('cancel_order_') || action.startsWith('return_order_')) {
-        const orderId = action.split('_').pop();
-        const actionType = action.startsWith('cancel_order_') ? 'cancel' : 'return';
-        const actionResponse = await handleOrderAction(action, orderId, visitorInfo);
-        return res.status(200).json(actionResponse);
+      // Extract visitor info for database queries
+      const visitorEmail = visitor.email || 'demo@customer.com';
+      const visitorInfoForQuery = {
+        name: customerName,
+        email: visitorEmail,
+        hasInfo: true
+      };
+      
+      // ✅ SALESIQ FORM CONTROLLER TRIGGER (CORRECT WAY)
+if (messageText.startsWith('Order ')) {
+  const orderIdMatch = messageText.match(/Order\s+(ORD\d+)/);
+
+  if (!orderIdMatch) {
+    return res.status(200).json({
+      type: "message",
+      text: "❌ Invalid order selection."
+    });
+  }
+
+  const orderId = orderIdMatch[1];
+  console.log(`📦 Triggering Cancel Form for: ${orderId}`);
+
+  // ✅ THIS OPENS THE SALESIQ FORM UI DIRECTLY
+  return res.status(200).json({
+    type: "form",
+    title: `❌ Cancel Order ${orderId}`,
+    name: "cancel_order_form",   // ✅ MUST MATCH FORM CONTROLLER NAME IN SALESIQ
+    fields: [
+      {
+        name: "order_id",
+        label: "Order ID",
+        type: "text",
+        value: orderId,
+        readonly: true,
+        required: true
+      },
+      {
+        name: "cancellation_reason",
+        label: "Reason for Cancellation",
+        type: "textarea",
+        placeholder: "Why do you want to cancel this order?",
+        required: true,
+        validation: { maxLength: 500 }
+      },
+      {
+        name: "refund_method",
+        label: "Refund Method",
+        type: "select",
+        required: true,
+        options: [
+          { label: "Original Payment", value: "original_payment" },
+          { label: "Wallet Credit", value: "wallet" },
+          { label: "Bank Transfer", value: "bank_transfer" }
+        ]
+      },
+      {
+        name: "bank_details",
+        label: "Bank Details (if Bank Transfer)",
+        type: "textarea",
+        required: false,
+        conditional: {
+          field: "refund_method",
+          value: "bank_transfer"
+        }
+      }
+    ],
+    action: {
+      type: "submit",
+      label: "Submit Cancellation",
+      name: "process_cancellation"
+    }
+  });
+}
+
+
+      
+      // ✅ HANDLE MAIN MENU SUGGESTIONS
+      if (messageText === "❌ Cancel Order") {
+        const customerData = await getCustomerData(visitorEmail);
+        const cancelResponse = await handleCancelAction(customerData, visitorInfoForQuery);
+        
+        console.log('\n✅ ===== SENDING CANCEL ORDER RESPONSE =====');
+        console.log('Response Type:', cancelResponse.type);
+        console.log('Message:', cancelResponse.text);
+        console.log('Number of Buttons:', cancelResponse.buttons?.length || 0);
+        if (cancelResponse.buttons && cancelResponse.buttons.length > 0) {
+          console.log('Buttons:');
+          cancelResponse.buttons.forEach((btn, idx) => {
+            console.log(`  ${idx + 1}. Label: "${btn.label}", Name: "${btn.name}", Type: "${btn.type}"`);
+          });
+        }
+        console.log('\n📤 Full Response JSON:');
+        console.log(JSON.stringify(cancelResponse, null, 2));
+        console.log('=======================================\n');
+        
+        return res.status(200).json(cancelResponse);
       }
       
-      // Handle general button actions
-      if (action === 'return_action' || action === 'cancel_action' || action === 'other_action') {
+      if (messageText === "🔄 Return Order") {
+        const customerData = await getCustomerData(visitorEmail);
+        const returnResponse = handleReturnAction(customerData, visitorInfoForQuery);
+        return res.status(200).json(returnResponse);
+      }
+      
+      if (messageText === "📋 Other Options") {
+        const customerData = await getCustomerData(visitorEmail);
+        const otherResponse = handleOtherAction(customerData, visitorInfoForQuery);
+        return res.status(200).json(otherResponse);
+      }
+      
+      if (messageText === "🏠 Back to Menu") {
+        // Return to main menu
+        const response = {
+          action: "reply",
+          replies: [
+            {
+              text: `👋 Hi ${customerName}! How can I help you today?`
+            }
+          ],
+          suggestions: [
+            "🔄 Return Order",
+            "❌ Cancel Order",
+            "📋 Other Options"
+          ]
+        };
+        return res.status(200).json(response);
+      }
+      
+      // ✅ DEFAULT: SHOW MAIN MENU
+      const response = {
+        action: "reply",
+        replies: [
+          {
+            text: `👋 Hi ${customerName}! How can I help you today?`
+          }
+        ],
+        suggestions: [
+          "🔄 Return Order",
+          "❌ Cancel Order",
+          "📋 Other Options"
+        ]
+      };
+      
+      console.log('\n✅ ===== SENDING RESPONSE TO SALESIQ =====');
+      console.log('Action:', response.action);
+      console.log('Message:', response.replies[0].text);
+      console.log('Number of Suggestions:', response.suggestions.length);
+      console.log('\n📤 Full Response:');
+      console.log(JSON.stringify(response, null, 2));
+      console.log('=======================================\n');
+
+      return res.status(200).json(response);
+    }
+
+
+    // ✅ HANDLE FORM SUBMISSION
+    if (formData && formName) {
+      console.log('📋 FORM SUBMITTED:', formName);
+
+      const formResponse = await processFormSubmission(
+        formName,
+        formData,
+        visitorInfo
+      );
+
+      return res.status(200).json(formResponse);
+    }
+
+    // ✅ HANDLE POSTBACK BUTTON ACTIONS
+    if (requestData.postback) {
+      const action = requestData.postback.name;
+      console.log('\n🔘 ===== POSTBACK BUTTON CLICKED =====');
+      console.log('Action:', action);
+      console.log('Visitor:', visitorInfo.email);
+
+      if (
+        action.startsWith('cancel_order_') ||
+        action.startsWith('return_order_')
+      ) {
+        const orderId = action.split('_').pop();
+        console.log('📦 Extracted Order ID:', orderId);
+        console.log('🔍 Fetching order details and opening form...');
+        
+        const actionResponse = await handleOrderAction(
+          action,
+          orderId,
+          visitorInfo
+        );
+        
+        console.log('\n📤 Sending Form Response:');
+        console.log('Type:', actionResponse.type);
+        console.log('Title:', actionResponse.title);
+        console.log('Form Name:', actionResponse.name);
+        console.log('Number of Fields:', actionResponse.fields?.length || 0);
+        console.log('\n📋 Full Form JSON:');
+        console.log(JSON.stringify(actionResponse, null, 2));
+        console.log('=======================================\n');
+        
+        return res.status(200).json(actionResponse);
+      }
+
+      if (
+        action === 'return_action' ||
+        action === 'cancel_action' ||
+        action === 'other_action'
+      ) {
         const buttonResponse = await handleButtonAction(action, visitorInfo);
         return res.status(200).json(buttonResponse);
       }
-      
-      // Handle back to menu
+
       if (action === 'back_to_menu') {
         const menuResponse = await sendCustomerWidget(visitorInfo);
         return res.status(200).json(menuResponse);
       }
-      
-      // Handle other actions
+
       if (action === 'check_status') {
         const customerData = await getCustomerData(visitorInfo.email);
         const statusResponse = createOrderStatusResponse(customerData);
         return res.status(200).json(statusResponse);
       }
-      
+
       if (action === 'feedback') {
         return res.status(200).json(createFeedbackForm());
       }
-      
+
       if (action === 'view_profile') {
         const widgetResponse = await sendCustomerWidget(visitorInfo);
         return res.status(200).json(widgetResponse);
       }
     }
-    
-    // Handle user messages - automatically send action buttons
-    const isUserMessage = requestData.message || 
-                         requestData.text || 
-                         requestData.chat_message ||
-                         handler === 'message' ||
-                         handler === 'chat' ||
-                         (requestData.event && requestData.event.type === 'message');
-    
-    if (isUserMessage) {
-      console.log('💬 User sent a message - sending action buttons automatically');
-      console.log('Message content:', requestData.message || requestData.text || requestData.chat_message || 'No content');
-      
-      // Handle SalesIQ preview mode
-      if (visitorInfo.name === 'Priya' && (!visitorInfo.email || visitorInfo.email === 'Not provided')) {
-        visitorInfo.email = 'priya@gmail.com';
-        visitorInfo.name = 'Priya Sharma';
-      }
-      
-      // If no email provided, use demo email
+
+    // ✅ HANDLE NORMAL USER CHAT MESSAGE (only for specific keywords)
+    const rawMessage =
+  typeof requestData.message === 'string'
+    ? requestData.message
+    : typeof requestData.text === 'string'
+    ? requestData.text
+    : typeof requestData.chat_message === 'string'
+    ? requestData.chat_message
+    : typeof requestData.message?.text === 'string'
+    ? requestData.message.text
+    : '';
+    const messageText = rawMessage.toLowerCase().trim();
+
+    console.log('✅ Normalized Message Text:', messageText);    
+    const triggerKeywords = ['hi', 'hello', 'menu', 'start'];
+    const shouldShowMenu = triggerKeywords.includes(messageText);
+
+    if (shouldShowMenu) {
+      console.log('💬 USER TRIGGERED MENU WITH:', messageText);
+
       if (!visitorInfo.email || visitorInfo.email === 'Not provided') {
         visitorInfo.email = 'demo@customer.com';
         visitorInfo.name = 'Demo Customer';
       }
-      
-      // Send automatic action buttons response
-      const actionButtonsResponse = createAutoActionButtonsMessage(visitorInfo);
-      return res.status(200).json(actionButtonsResponse);
-    }
-    
-    // Handle SalesIQ preview mode - if visitor name is "Priya", use priya@gmail.com
-    if (visitorInfo.name === 'Priya' && (!visitorInfo.email || visitorInfo.email === 'Not provided')) {
-      visitorInfo.email = 'priya@gmail.com';
-      visitorInfo.name = 'Priya Sharma';
-      console.log('🎭 Preview mode detected - using Priya Sharma demo data');
+
+      const autoButtons = createAutoActionButtonsMessage(visitorInfo);
+      return res.status(200).json(autoButtons);
     }
 
-    // If no email provided, use demo email for testing
+    // ✅ DEFAULT FALLBACK → SHOW CUSTOMER WIDGET
     if (!visitorInfo.email || visitorInfo.email === 'Not provided') {
-      console.log('🎭 No email provided - using demo customer for testing');
       visitorInfo.email = 'demo@customer.com';
       visitorInfo.name = 'Demo Customer';
     }
 
-    // Handle Sarathy preview mode
-    if (visitorInfo.name === 'Sarathy' && (!visitorInfo.email || visitorInfo.email === 'Not provided')) {
-      visitorInfo.email = 'sarathy@gmail.com';
-      visitorInfo.name = 'Sarathy Kumar';
-      console.log('🎭 Preview mode detected - using Sarathy Kumar demo data');
-    }
+    console.log('👤 VISITOR:', visitorInfo.name, visitorInfo.email);
 
-    console.log('Handler type:', handler);
-    console.log('Visitor:', visitorInfo.name, visitorInfo.email);
-
-    // Generate and send the customer widget
     const widgetResponse = await sendCustomerWidget(visitorInfo);
-    
-    console.log('✅ Widget response generated successfully');
     return res.status(200).json(widgetResponse);
 
   } catch (error) {
-    console.error('❌ Webhook error:', error.message);
-    console.error('Stack:', error.stack);
-    
+    console.error('❌ WEBHOOK ERROR:', error.message);
+
     return res.status(200).json({
       type: 'widget_detail',
       sections: [
         {
           name: 'error',
           layout: 'info',
-          title: '❌ Error Loading Customer Data',
+          title: '❌ Webhook Processing Error',
           data: [
             { label: 'Error', value: error.message },
-            { label: 'Timestamp', value: new Date().toISOString() }
+            { label: 'Time', value: new Date().toISOString() }
           ]
         }
       ]
     });
   }
 });
-
-// Cancel order endpoint
-app.post('/orders/:orderId/cancel', handleCancelOrder);
-
-// Return order endpoint
-app.post('/orders/:orderId/return', handleReturnOrder);
 
 // Notifications endpoint
 app.post('/api/notifications', handleNotification);
@@ -2067,6 +2374,93 @@ app.post('/api/track-event', (req, res) => {
   }
 });
 
+// ✅ API ENDPOINT: GET CANCELLABLE ORDERS (for Flutter app)
+app.post('/api/get-cancellable-orders', async (req, res) => {
+  try {
+    console.log('\n📥 ===== GET CANCELLABLE ORDERS API =====');
+    
+    // Validate webhook secret
+    const receivedSecret = req.headers['x-webhook-secret'] || req.headers['x-webhook-secret'.toLowerCase()];
+    if (!receivedSecret || receivedSecret !== WEBHOOK_SECRET) {
+      return res.status(401).json({
+        success: false,
+        message: 'Unauthorized: Invalid webhook secret'
+      });
+    }
+    
+    const { customer_email } = req.body;
+    
+    if (!customer_email) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required field: customer_email'
+      });
+    }
+    
+    console.log('🔍 Fetching cancellable orders for:', customer_email);
+    
+    let cancellableOrders = [];
+    
+    // Query Firestore
+    if (firebaseEnabled && db) {
+      try {
+        // ✅ First get userId
+const userId = await getUserIdFromEmail(customer_email);
+
+if (!userId) {
+  return res.status(404).json({
+    success: false,
+    message: 'User not found'
+  });
+}
+
+// ✅ Now fetch from users/{userId}/orders
+const ordersSnapshot = await db.collection('users')
+  .doc(userId)
+  .collection('orders')
+  .get();
+
+        
+        ordersSnapshot.forEach(doc => {
+          const orderData = doc.data();
+          const status = orderData.status?.toString().toLowerCase().split('.').pop() || '';
+          
+          // Filter cancellable orders in code to avoid composite index
+          if (status === 'confirmed' || status === 'processing' || status === 'pending') {
+            cancellableOrders.push({
+              id: doc.id,
+              order_id: doc.id,
+              product_name: orderData.items?.[0]?.productName || 'Product',
+              total_amount: orderData.totalAmount || 0,
+              status: status,
+              orderDate: orderData.orderDate?.toDate?.()?.toISOString() || orderData.orderDate,
+              paymentMethod: orderData.paymentMethod,
+              paymentStatus: orderData.paymentStatus
+            });
+          }
+        });
+        
+        console.log(`✅ Found ${cancellableOrders.length} cancellable orders from Firestore`);
+      } catch (firestoreError) {
+        console.error('❌ Firestore query failed:', firestoreError.message);
+      }
+    }
+    
+    return res.status(200).json({
+      success: true,
+      orders: cancellableOrders,
+      count: cancellableOrders.length
+    });
+    
+  } catch (error) {
+    console.error('❌ Error fetching cancellable orders:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
+});
+
 // Form submission endpoint
 app.post('/api/form-submit', async (req, res) => {
   try {
@@ -2089,39 +2483,56 @@ app.post('/salesiq/form-submit', async (req, res) => {
     console.log('Headers:', req.headers);
     console.log('Body:', JSON.stringify(req.body, null, 2));
     
-    // 1. VALIDATE WEBHOOK SECRET
-    const receivedSecret = req.headers['x-webhook-secret'];
-    if (!receivedSecret || receivedSecret !== WEBHOOK_SECRET) {
-      console.error('❌ Invalid webhook secret');
-      return res.status(401).json({
-        success: false,
-        message: 'Unauthorized: Invalid webhook secret'
-      });
-    }
-    console.log('✅ Webhook secret validated');
+    // 1. SKIP WEBHOOK SECRET VALIDATION
+    console.log("⚠️ SalesIQ webhook - secret validation skipped");
     
-    // 2. EXTRACT PAYLOAD
+    // 2. EXTRACT PAYLOAD (handle both old and new format)
     const {
       order_id,
       user_id,
-      action, // "cancel" or "return"
-      date,
+      action,
       reason,
+      cancellation_reason,
+      refund_method,
+      bank_details,
       refund_details,
       idempotency_token,
-      source
+      source,
+      date,
+      visitor,
+      visitor_info,
+      email
     } = req.body;
     
+    // Normalize fields with SAFE fallback extraction
+    const normalizedOrderId = order_id;
+    const normalizedUserId =
+      req.body.user_id ||
+      req.body.visitor?.email ||
+      req.body.visitor_info?.email ||
+      req.body.email;
+    const normalizedAction = action || 'cancel';
+    const normalizedReason = cancellation_reason || reason;
+    const normalizedRefundMethod = refund_method || refund_details?.refund_method || 'original_payment';
+    const normalizedBankDetails = bank_details || refund_details?.refund_reference_info;
+    
+    console.log('📋 Normalized Form Data:');
+    console.log('  Order ID:', normalizedOrderId);
+    console.log('  User ID:', normalizedUserId);
+    console.log('  Action:', normalizedAction);
+    console.log('  Reason:', normalizedReason);
+    console.log('  Refund Method:', normalizedRefundMethod);
+    
     // 3. VALIDATE REQUIRED FIELDS
-    if (!order_id || !user_id || !action || !reason) {
+    if (!normalizedOrderId || !normalizedReason) {
       return res.status(400).json({
         success: false,
-        message: 'Missing required fields: order_id, user_id, action, or reason'
+        message: 'Missing required fields: order_id or cancellation_reason'
       });
     }
     
     // 4. VALIDATE ACTION TYPE
-    if (action !== 'cancel' && action !== 'return') {
+    if (normalizedAction !== 'cancel' && normalizedAction !== 'return') {
       return res.status(400).json({
         success: false,
         message: 'Invalid action. Must be "cancel" or "return"'
@@ -2129,7 +2540,7 @@ app.post('/salesiq/form-submit', async (req, res) => {
     }
     
     // 5. VALIDATE REASON LENGTH
-    if (reason.length > 500) {
+    if (normalizedReason.length > 500) {
       return res.status(400).json({
         success: false,
         message: 'Reason must be 500 characters or less'
@@ -2137,37 +2548,46 @@ app.post('/salesiq/form-submit', async (req, res) => {
     }
     
     // 6. VALIDATE REFUND METHOD
-    const refundMethod = refund_details?.refund_method || 'original_payment';
-    if (refundMethod === 'bank_transfer' && !refund_details?.refund_reference_info) {
+    if (normalizedRefundMethod === 'bank_transfer' && !normalizedBankDetails) {
       return res.status(400).json({
         success: false,
-        message: 'Bank/account reference is required for bank transfer refunds'
+        message: 'Bank account details are required for bank transfer refunds'
       });
     }
     
     // 7. CHECK IDEMPOTENCY (prevent duplicate submissions)
-    // In production, store idempotency_token in database and check if already processed
     console.log('🔑 Idempotency token:', idempotency_token);
     
-    // 8. FETCH ORDER FROM FIRESTORE (or use mock data)
+    // 8. FETCH ORDER FROM FIRESTORE (from users subcollection)
     let orderData = null;
+    let userId = null;
     if (firebaseEnabled && db) {
       try {
-        const orderDoc = await db.collection('orders').doc(order_id).get();
-        if (orderDoc.exists) {
-          orderData = orderDoc.data();
-          console.log('📦 Order found in Firestore:', order_id);
+        userId = await getUserIdFromEmail(normalizedUserId);
+        if (userId) {
+          const orderDoc = await db.collection('users')
+            .doc(userId)
+            .collection('orders')
+            .doc(normalizedOrderId)
+            .get();
+          
+          if (orderDoc.exists) {
+            orderData = orderDoc.data();
+            console.log(`📦 Order found in Firestore: users/${userId}/orders/${normalizedOrderId}`);
+          }
+        } else {
+          console.log('⚠️ User not found for email:', normalizedUserId);
         }
       } catch (firestoreError) {
-        console.log('⚠️ Firestore lookup failed, using mock data');
+        console.log('⚠️ Firestore lookup failed:', firestoreError.message);
       }
     }
     
     // Mock order data if not found
     if (!orderData) {
       orderData = {
-        id: order_id,
-        customerEmail: user_id,
+        id: normalizedOrderId,
+        customerEmail: normalizedUserId || 'demo@customer.com',
         totalAmount: refund_details?.refundable_amount || 1499,
         status: 'confirmed',
         items: [{ productName: 'Sample Product', price: 1499, quantity: 1 }]
@@ -2179,44 +2599,49 @@ app.post('/salesiq/form-submit', async (req, res) => {
     if (ineligibleStatuses.includes(orderData.status?.toLowerCase())) {
       return res.status(400).json({
         success: false,
-        message: `Order #${order_id} is already ${orderData.status}. Cannot ${action}.`
+        message: `Order #${normalizedOrderId} is already ${orderData.status}. Cannot ${normalizedAction}.`
       });
     }
     
     // 10. CALCULATE REFUND AMOUNT
     const refundAmount = refund_details?.refundable_amount || orderData.totalAmount;
-    const refundReference = `REF_${action.toUpperCase()}_${Date.now()}`;
+    const refundReference = `REF_${normalizedAction.toUpperCase()}_${Date.now()}`;
     
-    // 11. UPDATE ORDER STATUS IN FIRESTORE
-    const newStatus = action === 'cancel' ? 'CANCELLED' : 'RETURNED';
-    if (firebaseEnabled && db) {
+    // 11. UPDATE ORDER STATUS IN FIRESTORE (in users subcollection)
+    const newStatus = normalizedAction === 'cancel' ? 'cancelled' : 'returned';
+    if (firebaseEnabled && db && userId) {
       try {
-        await db.collection('orders').doc(order_id).update({
+        await db.collection('users')
+          .doc(userId)
+          .collection('orders')
+          .doc(normalizedOrderId)
+          .update({
           status: newStatus,
           updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-          [`${action}_reason`]: reason,
-          [`${action}_date`]: date || new Date().toISOString(),
+          [`${normalizedAction}_reason`]: normalizedReason,
+          [`${normalizedAction}_date`]: date || new Date().toISOString(),
           refund: {
             amount: refundAmount,
-            method: refundMethod,
+            method: normalizedRefundMethod,
             reference: refundReference,
             status: 'initiated',
-            initiated_at: admin.firestore.FieldValue.serverTimestamp()
+            initiated_at: admin.firestore.FieldValue.serverTimestamp(),
+            bank_details: normalizedBankDetails || null
           }
         });
-        console.log(`✅ Order ${order_id} updated to ${newStatus} in Firestore`);
+        console.log(`✅ Order ${normalizedOrderId} updated to ${newStatus} in users/${userId}/orders/${normalizedOrderId}`);
         
         // Create issue/ticket in Firestore
         const issueId = `ISS_${Date.now()}`;
-        await db.collection('issues').doc(issueId).add({
+        await db.collection('issues').doc(issueId).set({
           id: issueId,
-          customerEmail: user_id,
-          orderId: order_id,
+          customerEmail: normalizedUserId,
+          orderId: normalizedOrderId,
           issueType: action === 'cancel' ? 'Order Cancellation' : 'Product Return',
-          description: reason,
+          description: normalizedReason,
           status: 'Processing',
           priority: 'High',
-          resolution: `${action} request received. Refund of ₹${refundAmount} initiated.`,
+          resolution: `${normalizedAction} request received. Refund of ₹${refundAmount} initiated.`,
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
           updatedAt: admin.firestore.FieldValue.serverTimestamp()
         });
@@ -2227,60 +2652,47 @@ app.post('/salesiq/form-submit', async (req, res) => {
     }
     
     // 12. INITIATE REFUND (simulate - in production, call payment gateway)
-    console.log(`💰 Initiating refund: ₹${refundAmount} via ${refundMethod}`);
+    console.log(`💰 Initiating refund: ₹${refundAmount} via ${normalizedRefundMethod}`);
     console.log(`📝 Refund reference: ${refundReference}`);
     
     // 13. NOTIFY OPERATOR (send to SalesIQ or email)
     const operatorNotification = {
       type: action === 'cancel' ? 'order_cancelled' : 'order_returned',
-      customerEmail: user_id,
-      orderId: order_id,
-      action: action,
-      reason: reason,
+      customerEmail: normalizedUserId,
+      orderId: normalizedOrderId,
+      action: normalizedAction,
+      reason: normalizedReason,
       refundAmount: refundAmount,
-      refundMethod: refundMethod,
+      refundMethod: normalizedRefundMethod,
       refundReference: refundReference,
       priority: 'high',
       timestamp: new Date().toISOString()
     };
     
     console.log('📧 Operator notification:', operatorNotification);
-    // In production: send email/SMS/push notification to support team
     
     // 14. AUDIT LOG
     console.log('📊 Audit log:', {
-      action: action,
-      order_id: order_id,
-      user_id: user_id,
-      reason: reason,
-      refund_amount: refundAmount,
-      idempotency_token: idempotency_token,
-      source: source,
+      event: `order_${normalizedAction}`,
+      orderId: normalizedOrderId,
+      userId: normalizedUserId,
       timestamp: new Date().toISOString()
     });
     
-    // 15. RETURN SUCCESS RESPONSE
-    const successResponse = {
-      success: true,
-      order_id: order_id,
-      new_status: newStatus,
-      refund: {
-        amount: refundAmount,
-        reference: refundReference,
-        method: refundMethod,
-        status: 'initiated'
-      },
-      message: `Order #${order_id} ${action}ed successfully. Refund of ₹${refundAmount} initiated.`
-    };
-    
+    // 15. RETURN CHAT MESSAGE RESPONSE TO SALESIQ
     console.log('✅ Form submission processed successfully');
-    return res.status(200).json(successResponse);
+    return res.status(200).json({
+      type: "message",
+      text: `✅ Your order #${normalizedOrderId} has been successfully ${newStatus}.\n\n💰 Refund: ₹${refundAmount}\n🔁 Method: ${normalizedRefundMethod}\n📄 Reference: ${refundReference}`,
+      delay: 800
+    });
     
   } catch (error) {
     console.error('❌ SalesIQ form submission error:', error);
     return res.status(500).json({
       success: false,
-      message: 'Unexpected error while processing form submission: ' + error.message
+      message: 'Internal server error processing form submission',
+      error: error.message
     });
   }
 });
@@ -2356,8 +2768,6 @@ app.listen(PORT, () => {
   console.log(`📋 Health Check: http://localhost:${PORT}/`);
   console.log(`🔗 Webhook Endpoint: http://localhost:${PORT}/webhook`);
   console.log(`🔐 SalesIQ Form Submit: http://localhost:${PORT}/salesiq/form-submit`);
-  console.log(`📦 Cancel Endpoint: http://localhost:${PORT}/orders/:orderId/cancel`);
-  console.log(`📦 Return Endpoint: http://localhost:${PORT}/orders/:orderId/return`);
   console.log(`📡 Notifications: http://localhost:${PORT}/api/notifications`);
   console.log(`\n🔑 Webhook Secret: ${WEBHOOK_SECRET}`);
   console.log(`💡 Update your Flutter app to use: http://localhost:${PORT}`);

@@ -5,6 +5,7 @@ import '../models/order.dart';
 import '../widgets/cancel_return_form.dart';
 import '../services/ecommerce_service.dart';
 import '../services/customer_timeline_service.dart';
+import '../services/order_cancellation_service.dart';
 
 class OrderDetailsScreen extends StatefulWidget {
   final Order order;
@@ -791,58 +792,128 @@ class _OrderDetailsScreenState extends State<OrderDetailsScreen>
     );
   }
   
+  // Helper method to parse refund method string to enum
+  RefundMethod _parseRefundMethod(String method) {
+    switch (method.toLowerCase()) {
+      case 'original_payment':
+        return RefundMethod.original_payment;
+      case 'wallet':
+      case 'store_credit':
+        return RefundMethod.store_credit;
+      case 'bank_transfer':
+        return RefundMethod.bank_transfer;
+      default:
+        return RefundMethod.original_payment;
+    }
+  }
+  
   Future<void> _handleCancelReturnSubmit(Map<String, dynamic> formData) async {
     try {
       final action = formData['action'];
       
-      // Call backend API
-      final success = await ECommerceService.submitCancelReturn(formData);
-      
-      if (success) {
-        // Update order status locally
-        final newStatus = action == 'cancel' ? OrderStatus.cancelled : OrderStatus.returned;
+      // ✅ NEW: Use OrderCancellationService for cancel requests
+      if (action == 'cancel') {
+        print('🔄 Submitting cancellation via OrderCancellationService...');
         
-        // Update the current order state
-        setState(() {
-          _currentOrder = Order(
-            id: (_currentOrder ?? widget.order).id,
-            customerId: (_currentOrder ?? widget.order).customerId,
-            customerName: (_currentOrder ?? widget.order).customerName,
-            customerEmail: (_currentOrder ?? widget.order).customerEmail,
-            customerPhone: (_currentOrder ?? widget.order).customerPhone,
-            items: (_currentOrder ?? widget.order).items,
-            totalAmount: (_currentOrder ?? widget.order).totalAmount,
-            status: newStatus,
-            paymentStatus: action == 'cancel' ? PaymentStatus.refunded : (_currentOrder ?? widget.order).paymentStatus,
-            paymentMethod: (_currentOrder ?? widget.order).paymentMethod,
-            orderDate: (_currentOrder ?? widget.order).orderDate,
-            deliveryDate: (_currentOrder ?? widget.order).deliveryDate,
-            shippingAddress: (_currentOrder ?? widget.order).shippingAddress,
-            trackingNumber: (_currentOrder ?? widget.order).trackingNumber,
-            statusHistory: [
-              ...(_currentOrder ?? widget.order).statusHistory,
-              '${DateTime.now().toString().substring(0, 16)}: Order ${action}led by customer'
-            ],
-            notes: (_currentOrder ?? widget.order).notes,
-            refundDetails: RefundDetails.fromJson(formData['refund_details']),
-            idempotencyToken: formData['idempotency_token'],
-          );
-        });
+        final response = await OrderCancellationService.submitCancellation(
+          orderId: (_currentOrder ?? widget.order).id,
+          customerEmail: (_currentOrder ?? widget.order).customerEmail,
+          cancellationReason: formData['reason'] ?? '',
+          refundMethod: formData['refund_details']?['refund_method'] ?? 'original_payment',
+          bankDetails: formData['refund_details']?['refund_reference_info'],
+        );
         
-        // Show success message
-        _showSuccessAcknowledgement(action, formData);
-        
-        // Notify SalesIQ
-        await _notifySalesIQ(action, formData);
-        
+        if (response.success) {
+          print('✅ Cancellation successful: ${response.message}');
+          
+          // Update order status locally
+          setState(() {
+            _currentOrder = Order(
+              id: (_currentOrder ?? widget.order).id,
+              customerId: (_currentOrder ?? widget.order).customerId,
+              customerName: (_currentOrder ?? widget.order).customerName,
+              customerEmail: (_currentOrder ?? widget.order).customerEmail,
+              customerPhone: (_currentOrder ?? widget.order).customerPhone,
+              items: (_currentOrder ?? widget.order).items,
+              totalAmount: (_currentOrder ?? widget.order).totalAmount,
+              status: OrderStatus.cancelled,
+              paymentStatus: PaymentStatus.refunded,
+              paymentMethod: (_currentOrder ?? widget.order).paymentMethod,
+              orderDate: (_currentOrder ?? widget.order).orderDate,
+              deliveryDate: (_currentOrder ?? widget.order).deliveryDate,
+              shippingAddress: (_currentOrder ?? widget.order).shippingAddress,
+              trackingNumber: (_currentOrder ?? widget.order).trackingNumber,
+              statusHistory: [
+                ...(_currentOrder ?? widget.order).statusHistory,
+                '${DateTime.now().toString().substring(0, 16)}: Order cancelled by customer'
+              ],
+              notes: (_currentOrder ?? widget.order).notes,
+              refundDetails: response.refund != null ? RefundDetails(
+                refundableAmount: response.refund!.amount,
+                refundMethod: _parseRefundMethod(response.refund!.method),
+                refundReference: response.refund!.reference,
+              ) : null,
+              idempotencyToken: formData['idempotency_token'],
+            );
+          });
+          
+          // Show success message
+          _showSuccessAcknowledgement(action, formData);
+          
+          // Notify SalesIQ
+          await _notifySalesIQ(action, formData);
+          
+        } else {
+          throw Exception(response.message);
+        }
       } else {
-        throw Exception('Failed to process ${action} request');
+        // For return requests, use existing ECommerceService
+        final success = await ECommerceService.submitCancelReturn(formData);
+        
+        if (success) {
+          // Update order status locally
+          setState(() {
+            _currentOrder = Order(
+              id: (_currentOrder ?? widget.order).id,
+              customerId: (_currentOrder ?? widget.order).customerId,
+              customerName: (_currentOrder ?? widget.order).customerName,
+              customerEmail: (_currentOrder ?? widget.order).customerEmail,
+              customerPhone: (_currentOrder ?? widget.order).customerPhone,
+              items: (_currentOrder ?? widget.order).items,
+              totalAmount: (_currentOrder ?? widget.order).totalAmount,
+              status: OrderStatus.returned,
+              paymentStatus: (_currentOrder ?? widget.order).paymentStatus,
+              paymentMethod: (_currentOrder ?? widget.order).paymentMethod,
+              orderDate: (_currentOrder ?? widget.order).orderDate,
+              deliveryDate: (_currentOrder ?? widget.order).deliveryDate,
+              shippingAddress: (_currentOrder ?? widget.order).shippingAddress,
+              trackingNumber: (_currentOrder ?? widget.order).trackingNumber,
+              statusHistory: [
+                ...(_currentOrder ?? widget.order).statusHistory,
+                '${DateTime.now().toString().substring(0, 16)}: Order returned by customer'
+              ],
+              notes: (_currentOrder ?? widget.order).notes,
+              refundDetails: RefundDetails.fromJson(formData['refund_details']),
+              idempotencyToken: formData['idempotency_token'],
+            );
+          });
+          
+          // Show success message
+          _showSuccessAcknowledgement(action, formData);
+          
+          // Notify SalesIQ
+          await _notifySalesIQ(action, formData);
+        } else {
+          throw Exception('Failed to process return request');
+        }
       }
     } catch (e) {
+      print('❌ Error in _handleCancelReturnSubmit: $e');
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Error: $e'),
           backgroundColor: Colors.red,
+          duration: Duration(seconds: 5),
         ),
       );
     }
