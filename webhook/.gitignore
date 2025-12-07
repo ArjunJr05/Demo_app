@@ -1,2 +1,5 @@
 .vercel
 .env*.local
+webhook/api/firebase-service-account.json
+firebase-service-account.json
+
