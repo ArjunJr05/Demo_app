@@ -8,9 +8,8 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'firebase_options.dart';
 import 'services/customer_timeline_service.dart';
 import 'services/ecommerce_customer_service.dart';
-import 'services/preferences_service.dart';
+import 'services/salesiq_button_handler.dart'; // ✅ NEW IMPORT
 import 'screens/login_screen.dart';
-import 'screens/main_navigation.dart';
 import 'screens/order_details_screen.dart';
 import 'models/order.dart';
 
@@ -59,6 +58,10 @@ class _MyAppState extends State<MyApp> {
       
       // Initialize SalesIQ after Firebase is ready
       await initMobilisten();
+      
+      // ✅ NEW: Initialize SalesIQ Button Handler
+      await _initializeSalesIQButtonHandler();
+      
       await setupPushNotifications();
     } catch (e) {
       print("Service initialization error: $e");
@@ -79,6 +82,16 @@ class _MyAppState extends State<MyApp> {
       print("✅ SalesIQ Customer Widget initialized successfully!");
     } catch (e) {
       print("❌ SalesIQ Customer Widget initialization error: $e");
+    }
+  }
+
+  // ✅ NEW: Initialize SalesIQ Button Handler
+  Future<void> _initializeSalesIQButtonHandler() async {
+    try {
+      await SalesIQButtonHandler.instance.initialize();
+      print("✅ SalesIQ Button Handler initialized successfully!");
+    } catch (e) {
+      print("❌ SalesIQ Button Handler initialization error: $e");
     }
   }
 
@@ -118,15 +131,11 @@ class _MyAppState extends State<MyApp> {
     String? token = await messaging.getToken();
     if (token != null) {
       print("FCM Token: $token");
-      // Note: Push notification registration is handled in native code
-      // For Android: MyFirebaseMessagingService.onNewToken() calls MobilistenPlugin.enablePush()
-      // For iOS: Handle in AppDelegate.swift with registerForRemoteNotifications
     }
 
     // Listen for token refresh
     messaging.onTokenRefresh.listen((newToken) {
       print("FCM Token refreshed: $newToken");
-      // Token refresh is also handled in native code
     });
 
     // Handle foreground messages
@@ -134,8 +143,6 @@ class _MyAppState extends State<MyApp> {
       print('Got a message whilst in the foreground!');
       print('Message data: ${message.data}');
 
-      // The native services handle notification display
-      // Just log for debugging purposes
       if (message.notification != null) {
         print('Message also contained a notification: ${message.notification}');
       }
@@ -163,38 +170,7 @@ class _MyAppState extends State<MyApp> {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: '🛍️ E-Commerce with Smart SalesIQ',
-      home: FutureBuilder<bool>(
-        future: PreferencesService.isLoggedIn(),
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return Scaffold(
-              body: Center(child: CircularProgressIndicator()),
-            );
-          }
-          
-          // Check if user is logged in
-          if (snapshot.data == true) {
-            return FutureBuilder<Map<String, String?>>(
-              future: PreferencesService.getSavedUserData(),
-              builder: (context, userSnapshot) {
-                if (userSnapshot.connectionState == ConnectionState.waiting) {
-                  return Scaffold(
-                    body: Center(child: CircularProgressIndicator()),
-                  );
-                }
-                
-                final userData = userSnapshot.data ?? {};
-                return MainNavigation(
-                  customerEmail: userData['email'] ?? '',
-                  customerName: userData['name'] ?? 'User',
-                );
-              },
-            );
-          }
-          
-          return LoginScreen();
-        },
-      ),
+      home: LoginScreen(),
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         primarySwatch: Colors.blue,
@@ -244,6 +220,20 @@ class MobilistenDemoScreen extends StatelessWidget {
               },
               style: buttonStyle,
               child: Center(child: Text("🏆 Open Smart Timeline Chat")),
+            ),
+            SizedBox(height: 16),
+            // ✅ NEW: Manual trigger button for testing
+            ElevatedButton(
+              onPressed: () async {
+                await SalesIQButtonHandler.instance.triggerButtonContainer();
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text("🤖 Button container triggered!")),
+                );
+              },
+              style: buttonStyle.copyWith(
+                backgroundColor: WidgetStateProperty.all(Colors.purple),
+              ),
+              child: Center(child: Text("🎯 Test Button Container")),
             ),
             SizedBox(height: 16),
             ElevatedButton(
@@ -377,6 +367,8 @@ class MobilistenDemoScreen extends StatelessWidget {
                   child: ElevatedButton(
                     onPressed: () {
                       ZohoSalesIQ.unregisterVisitor();
+                      // ✅ NEW: Reset button handler on logout
+                      SalesIQButtonHandler.instance.resetSession();
                     },
                     style: buttonStyle,
                     child: Text("Logout"),

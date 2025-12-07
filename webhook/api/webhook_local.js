@@ -1785,6 +1785,99 @@ app.get('/', (req, res) => {
   });
 });
 
+
+// 🔘 SEND BUTTON CONTAINER TO SALESIQ
+app.post('/api/send-button-container', async (req, res) => {
+  try {
+    console.log('🔘 Button container request received');
+    const { customer_email, buttons, message } = req.body;
+    
+    console.log('Customer:', customer_email);
+    console.log('Buttons:', JSON.stringify(buttons, null, 2));
+    
+    // This endpoint would integrate with SalesIQ API to send bot messages
+    // For now, we log it and return success
+    
+    // In production, you would call SalesIQ API here:
+    // await salesiqAPI.sendBotMessage({
+    //   customerEmail: customer_email,
+    //   message: message,
+    //   buttons: buttons
+    // });
+    
+    console.log('✅ Button container logged (would be sent to SalesIQ in production)');
+    
+    res.status(200).json({
+      success: true,
+      message: 'Button container sent',
+      buttons: buttons
+    });
+  } catch (error) {
+    console.error('❌ Error sending button container:', error);
+    res.status(500).json({ error: 'Failed to send button container' });
+  }
+});
+
+// 💬 SEND BOT MESSAGE TO SALESIQ
+app.post('/api/send-message', async (req, res) => {
+  try {
+    console.log('💬 Bot message request received');
+    const { customer_email, message, type } = req.body;
+    
+    console.log('Customer:', customer_email);
+    console.log('Message:', message);
+    console.log('Type:', type);
+    
+    // In production, call SalesIQ API to send bot message
+    
+    console.log('✅ Bot message logged (would be sent to SalesIQ in production)');
+    
+    res.status(200).json({
+      success: true,
+      message: 'Bot message sent'
+    });
+  } catch (error) {
+    console.error('❌ Error sending bot message:', error);
+    res.status(500).json({ error: 'Failed to send bot message' });
+  }
+});
+
+// 🎯 HANDLE BUTTON CLICK FROM SALESIQ
+app.post('/api/button-click', async (req, res) => {
+  try {
+    console.log('🎯 Button click received');
+    const { button_id, action, customer_email } = req.body;
+    
+    console.log('Button ID:', button_id);
+    console.log('Action:', action);
+    console.log('Customer:', customer_email);
+    
+    // Handle the button action
+    let responseMessage = '';
+    
+    switch (action) {
+      case 'cancel':
+        responseMessage = 'Your request has been cancelled.';
+        break;
+      case 'return':
+        responseMessage = 'You have been returned to the previous menu.';
+        break;
+      default:
+        responseMessage = 'Action completed.';
+    }
+    
+    console.log('✅ Button click processed');
+    
+    res.status(200).json({
+      success: true,
+      response_message: responseMessage
+    });
+  } catch (error) {
+    console.error('❌ Error handling button click:', error);
+    res.status(500).json({ error: 'Failed to handle button click' });
+  }
+});
+
 // Main webhook endpoint
 app.post('/webhook', async (req, res) => {
   try {
