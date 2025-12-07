@@ -9,6 +9,9 @@ const admin = require('firebase-admin');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// 🔐 WEBHOOK SECRET for SalesIQ Form Controller
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || 'your_shared_secret_here_change_in_production';
+
 // Initialize Firebase Admin SDK
 let db = null;
 let firebaseEnabled = false;
@@ -1985,6 +1988,210 @@ app.post('/api/form-submit', async (req, res) => {
   }
 });
 
+// 🔐 SALESIQ FORM CONTROLLER ENDPOINT - Cancel/Return Form
+app.post('/salesiq/form-submit', async (req, res) => {
+  try {
+    console.log('\n📥 ===== SALESIQ FORM SUBMISSION =====');
+    console.log('Timestamp:', new Date().toISOString());
+    console.log('Headers:', req.headers);
+    console.log('Body:', JSON.stringify(req.body, null, 2));
+    
+    // 1. VALIDATE WEBHOOK SECRET
+    const receivedSecret = req.headers['x-webhook-secret'];
+    if (!receivedSecret || receivedSecret !== WEBHOOK_SECRET) {
+      console.error('❌ Invalid webhook secret');
+      return res.status(401).json({
+        success: false,
+        message: 'Unauthorized: Invalid webhook secret'
+      });
+    }
+    console.log('✅ Webhook secret validated');
+    
+    // 2. EXTRACT PAYLOAD
+    const {
+      order_id,
+      user_id,
+      action, // "cancel" or "return"
+      date,
+      reason,
+      refund_details,
+      idempotency_token,
+      source
+    } = req.body;
+    
+    // 3. VALIDATE REQUIRED FIELDS
+    if (!order_id || !user_id || !action || !reason) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required fields: order_id, user_id, action, or reason'
+      });
+    }
+    
+    // 4. VALIDATE ACTION TYPE
+    if (action !== 'cancel' && action !== 'return') {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid action. Must be "cancel" or "return"'
+      });
+    }
+    
+    // 5. VALIDATE REASON LENGTH
+    if (reason.length > 500) {
+      return res.status(400).json({
+        success: false,
+        message: 'Reason must be 500 characters or less'
+      });
+    }
+    
+    // 6. VALIDATE REFUND METHOD
+    const refundMethod = refund_details?.refund_method || 'original_payment';
+    if (refundMethod === 'bank_transfer' && !refund_details?.refund_reference_info) {
+      return res.status(400).json({
+        success: false,
+        message: 'Bank/account reference is required for bank transfer refunds'
+      });
+    }
+    
+    // 7. CHECK IDEMPOTENCY (prevent duplicate submissions)
+    // In production, store idempotency_token in database and check if already processed
+    console.log('🔑 Idempotency token:', idempotency_token);
+    
+    // 8. FETCH ORDER FROM FIRESTORE (or use mock data)
+    let orderData = null;
+    if (firebaseEnabled && db) {
+      try {
+        const orderDoc = await db.collection('orders').doc(order_id).get();
+        if (orderDoc.exists) {
+          orderData = orderDoc.data();
+          console.log('📦 Order found in Firestore:', order_id);
+        }
+      } catch (firestoreError) {
+        console.log('⚠️ Firestore lookup failed, using mock data');
+      }
+    }
+    
+    // Mock order data if not found
+    if (!orderData) {
+      orderData = {
+        id: order_id,
+        customerEmail: user_id,
+        totalAmount: refund_details?.refundable_amount || 1499,
+        status: 'confirmed',
+        items: [{ productName: 'Sample Product', price: 1499, quantity: 1 }]
+      };
+    }
+    
+    // 9. VALIDATE ORDER ELIGIBILITY
+    const ineligibleStatuses = ['cancelled', 'returned', 'refunded'];
+    if (ineligibleStatuses.includes(orderData.status?.toLowerCase())) {
+      return res.status(400).json({
+        success: false,
+        message: `Order #${order_id} is already ${orderData.status}. Cannot ${action}.`
+      });
+    }
+    
+    // 10. CALCULATE REFUND AMOUNT
+    const refundAmount = refund_details?.refundable_amount || orderData.totalAmount;
+    const refundReference = `REF_${action.toUpperCase()}_${Date.now()}`;
+    
+    // 11. UPDATE ORDER STATUS IN FIRESTORE
+    const newStatus = action === 'cancel' ? 'CANCELLED' : 'RETURNED';
+    if (firebaseEnabled && db) {
+      try {
+        await db.collection('orders').doc(order_id).update({
+          status: newStatus,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          [`${action}_reason`]: reason,
+          [`${action}_date`]: date || new Date().toISOString(),
+          refund: {
+            amount: refundAmount,
+            method: refundMethod,
+            reference: refundReference,
+            status: 'initiated',
+            initiated_at: admin.firestore.FieldValue.serverTimestamp()
+          }
+        });
+        console.log(`✅ Order ${order_id} updated to ${newStatus} in Firestore`);
+        
+        // Create issue/ticket in Firestore
+        const issueId = `ISS_${Date.now()}`;
+        await db.collection('issues').doc(issueId).add({
+          id: issueId,
+          customerEmail: user_id,
+          orderId: order_id,
+          issueType: action === 'cancel' ? 'Order Cancellation' : 'Product Return',
+          description: reason,
+          status: 'Processing',
+          priority: 'High',
+          resolution: `${action} request received. Refund of ₹${refundAmount} initiated.`,
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+        console.log(`✅ Issue ${issueId} created in Firestore`);
+      } catch (updateError) {
+        console.error('⚠️ Firestore update failed:', updateError.message);
+      }
+    }
+    
+    // 12. INITIATE REFUND (simulate - in production, call payment gateway)
+    console.log(`💰 Initiating refund: ₹${refundAmount} via ${refundMethod}`);
+    console.log(`📝 Refund reference: ${refundReference}`);
+    
+    // 13. NOTIFY OPERATOR (send to SalesIQ or email)
+    const operatorNotification = {
+      type: action === 'cancel' ? 'order_cancelled' : 'order_returned',
+      customerEmail: user_id,
+      orderId: order_id,
+      action: action,
+      reason: reason,
+      refundAmount: refundAmount,
+      refundMethod: refundMethod,
+      refundReference: refundReference,
+      priority: 'high',
+      timestamp: new Date().toISOString()
+    };
+    
+    console.log('📧 Operator notification:', operatorNotification);
+    // In production: send email/SMS/push notification to support team
+    
+    // 14. AUDIT LOG
+    console.log('📊 Audit log:', {
+      action: action,
+      order_id: order_id,
+      user_id: user_id,
+      reason: reason,
+      refund_amount: refundAmount,
+      idempotency_token: idempotency_token,
+      source: source,
+      timestamp: new Date().toISOString()
+    });
+    
+    // 15. RETURN SUCCESS RESPONSE
+    const successResponse = {
+      success: true,
+      order_id: order_id,
+      new_status: newStatus,
+      refund: {
+        amount: refundAmount,
+        reference: refundReference,
+        method: refundMethod,
+        status: 'initiated'
+      },
+      message: `Order #${order_id} ${action}ed successfully. Refund of ₹${refundAmount} initiated.`
+    };
+    
+    console.log('✅ Form submission processed successfully');
+    return res.status(200).json(successResponse);
+    
+  } catch (error) {
+    console.error('❌ SalesIQ form submission error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Unexpected error while processing form submission: ' + error.message
+    });
+  }
+});
+
 // Get customer data form
 app.get('/api/forms/customer-data', (req, res) => {
   res.json(createCustomerDataForm());
@@ -2055,10 +2262,12 @@ app.listen(PORT, () => {
   console.log(`📍 Local URL: http://localhost:${PORT}`);
   console.log(`📋 Health Check: http://localhost:${PORT}/`);
   console.log(`🔗 Webhook Endpoint: http://localhost:${PORT}/webhook`);
+  console.log(`🔐 SalesIQ Form Submit: http://localhost:${PORT}/salesiq/form-submit`);
   console.log(`📦 Cancel Endpoint: http://localhost:${PORT}/orders/:orderId/cancel`);
   console.log(`📦 Return Endpoint: http://localhost:${PORT}/orders/:orderId/return`);
   console.log(`📡 Notifications: http://localhost:${PORT}/api/notifications`);
-  console.log(`\n💡 Update your Flutter app to use: http://localhost:${PORT}`);
+  console.log(`\n🔑 Webhook Secret: ${WEBHOOK_SECRET}`);
+  console.log(`💡 Update your Flutter app to use: http://localhost:${PORT}`);
   console.log(`⏰ Started at: ${new Date().toISOString()}\n`);
 });
 
