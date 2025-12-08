@@ -107,8 +107,8 @@ function createCustomerDataForm() {
 function createCancelOrderForm(orderData) {
   return {
     type: "form",
-    title: `❌ Cancel Order ${orderData.id}`,
-    name: "cancel_order_form",
+    title: `Cancel Order ${orderData.id}`,
+    name: "orderCancellationForm",
     inputs: [
       {
         type: "text",
@@ -270,7 +270,7 @@ async function processFormSubmission(formName, formData, visitorInfo) {
   switch (formName) {
     case 'customer_data_form':
       return await handleCustomerDataForm(formData, visitorInfo);
-    case 'cancel_order_form':
+    case 'orderCancellationForm':
       return await handleCancelOrderForm(formData, visitorInfo);
     case 'return_order_form':
       return await handleReturnOrderForm(formData, visitorInfo);
@@ -345,7 +345,7 @@ async function handleCancelOrderForm(formData, visitorInfo) {
     } else {
       return {
         type: "message",
-        text: `❌ Failed to cancel order ${formData.order_id}. Please contact support.`,
+        text: `Failed to cancel order ${formData.order_id}. Please contact support.`,
         delay: 1000
       };
     }
@@ -385,7 +385,7 @@ async function handleReturnOrderForm(formData, visitorInfo) {
     } else {
       return {
         type: "message",
-        text: `❌ Failed to process return for order ${formData.order_id}. Please contact support.`,
+        text: `Failed to process return for order ${formData.order_id}. Please contact support.`,
         delay: 1000
       };
     }
@@ -478,7 +478,7 @@ function createCancelOrderResponse(customerData, orderId) {
   if (eligibleOrders.length === 0) {
     return {
       type: "message",
-      text: "❌ No orders eligible for cancellation found. Orders can only be cancelled before shipping.",
+      text: "No orders eligible for cancellation found. Orders can only be cancelled before shipping.",
       delay: 1000
     };
   }
@@ -496,7 +496,7 @@ function createCancelOrderResponse(customerData, orderId) {
         subtext: `Ordered on ${new Date(order.orderDate).toLocaleDateString()}`,
         action: {
           type: "form",
-          name: "cancel_order_form",
+          name: "orderCancellationForm",
           data: { order_id: order.id }
         }
       }))
@@ -520,7 +520,7 @@ function createReturnOrderResponse(customerData, orderId) {
   if (eligibleOrders.length === 0) {
     return {
       type: "message",
-      text: "❌ No orders eligible for return found. Orders can only be returned after delivery.",
+      text: "No orders eligible for return found. Orders can only be returned after delivery.",
       delay: 1000
     };
   }
@@ -549,7 +549,7 @@ function createReturnOrderResponse(customerData, orderId) {
 function createErrorResponse(message) {
   return {
     type: "message",
-    text: `❌ ${message}`,
+    text: `${message}`,
     delay: 1000
   };
 }
@@ -557,45 +557,114 @@ function createErrorResponse(message) {
 // Process Cancellation (integrate with Firestore)
 async function processCancellation(cancellationData) {
   try {
-    const refundReference = `REF${Date.now()}`;
+    console.log('🔄 processCancellation started');
+    console.log('  Order ID:', cancellationData.order_id);
+    console.log('  User ID:', cancellationData.user_id);
+    const refundReference = `REF_${cancellationData.order_id}_${Date.now()}`;
     const reason = cancellationData.cancellation_reason || cancellationData.reason || 'No reason provided';
     
-    // Build update data, filtering out undefined values
-    const additionalData = {};
-    if (reason) additionalData.cancelReason = reason;
-    if (refundReference) additionalData.refundReference = refundReference;
-    if (cancellationData.refund_details) additionalData.refundDetails = cancellationData.refund_details;
-    additionalData.cancelledAt = admin.firestore.FieldValue.serverTimestamp();
+    console.log('  Refund Reference:', refundReference);
+    console.log('  Reason:', reason);
     
-    // Update order status in Firestore
-    const success = await updateOrderStatusInFirestore(
-      cancellationData.order_id,
-      'cancelled',
-      cancellationData.user_id,
-      additionalData
-    );
-    
-    if (success) {
-      // Log cancellation activity
-      await saveIssueToFirestore({
-        id: `CANCEL_${Date.now()}`,
-        customerEmail: cancellationData.user_id,
-        orderId: cancellationData.order_id,
-        issueType: 'Order Cancellation',
-        description: `Order cancelled by customer. Reason: ${reason}`,
-        status: 'Resolved',
-        resolution: `Refund processed with reference: ${refundReference}`
-      });
-    }
-    
-    return {
-      success,
+    // ✅ ONLY SAVE ISSUE - DO NOT UPDATE ORDER STATUS YET
+    // Human agent will review and approve the cancellation
+    console.log('💾 Saving cancellation request to issues collection...');
+    await saveIssueToFirestore({
+      id: `CANCEL_${Date.now()}`,
+      customerEmail: cancellationData.user_id,
+      orderId: cancellationData.order_id,
+      issueType: 'Order Cancellation',
+      description: `Customer requested order cancellation. Reason: ${reason}`,
+      status: 'Pending Review',  // Changed from 'Resolved' to 'Pending Review'
+      resolution: `Awaiting human agent review. Reference: ${refundReference}`,
+      // Additional details for display in app
+      cancellationReason: reason,
+      refundMethod: cancellationData.refund_method || 'original_payment',
       refundReference: refundReference,
-      message: 'Order cancelled successfully'
+      amount: cancellationData.amount || 0,
+      paymentMethod: cancellationData.payment_method || 'N/A',
+      source: 'salesiq_chat'
+    });
+    console.log('✅ Cancellation request saved to Firestore');
+    
+    console.log('✅ processCancellation completed successfully');
+    return {
+      success: true,
+      refundReference: refundReference,
+      message: 'Cancellation request submitted for review'
     };
   } catch (error) {
-    console.error('❌ Cancellation processing error:', error);
+    console.error('Cancellation processing error:', error);
+    console.error('Error stack:', error.stack);
     return { success: false, error: error.message };
+  }
+}
+
+// Delete Order from Firestore (Tasks 4 & 5: Delete from orders and issues)
+async function deleteOrderFromFirestore(customerEmail, orderId) {
+  try {
+    console.log('\n🗑️ ===== DELETING ORDER FROM FIRESTORE =====');
+    console.log('Customer Email:', customerEmail);
+    console.log('Order ID:', orderId);
+    
+    if (!firebaseEnabled || !db) {
+      console.log('⚠️ Firebase not enabled, skipping deletion');
+      return { success: false, message: 'Firebase not enabled' };
+    }
+    
+    // Step 1: Find and delete from orders collection
+    console.log('\n📦 Step 1: Deleting from orders collection...');
+    const ordersRef = db.collection('orders');
+    const orderQuery = await ordersRef
+      .where('userId', '==', customerEmail)
+      .where('id', '==', orderId)
+      .get();
+    
+    if (!orderQuery.empty) {
+      const deletePromises = [];
+      orderQuery.forEach(doc => {
+        console.log('  - Deleting order document:', doc.id);
+        deletePromises.push(doc.ref.delete());
+      });
+      await Promise.all(deletePromises);
+      console.log('✅ Order deleted from orders collection');
+    } else {
+      console.log('⚠️ Order not found in orders collection');
+    }
+    
+    // Step 2: Find and delete related issues
+    console.log('\n🎫 Step 2: Deleting related issues...');
+    const issuesRef = db.collection('issues');
+    const issuesQuery = await issuesRef
+      .where('customerEmail', '==', customerEmail)
+      .where('orderId', '==', orderId)
+      .get();
+    
+    if (!issuesQuery.empty) {
+      const deletePromises = [];
+      issuesQuery.forEach(doc => {
+        console.log('  - Deleting issue document:', doc.id, '(', doc.data().issueType, ')');
+        deletePromises.push(doc.ref.delete());
+      });
+      await Promise.all(deletePromises);
+      console.log('✅ Related issues deleted');
+    } else {
+      console.log('⚠️ No related issues found');
+    }
+    
+    console.log('\n✅ ===== ORDER DELETION COMPLETE =====\n');
+    return { 
+      success: true, 
+      message: 'Order and related issues deleted successfully' 
+    };
+    
+  } catch (error) {
+    console.error('Error deleting order from Firestore:', error);
+    console.error('Error stack:', error.stack);
+    return { 
+      success: false, 
+      error: error.message 
+    };
   }
 }
 
@@ -637,7 +706,7 @@ async function processReturn(returnData) {
       message: 'Return request submitted successfully'
     };
   } catch (error) {
-    console.error('❌ Return processing error:', error);
+    console.error('Return processing error:', error);
     return { success: false, error: error.message };
   }
 }
@@ -782,7 +851,7 @@ const ordersSnapshot = await db.collection('users')
     return getMockCustomerData(customerEmail);
     
   } catch (error) {
-    console.error('❌ Error getting customer data:', error);
+    console.error('Error getting customer data:', error);
     return getMockCustomerData(customerEmail);
   }
 }
@@ -1055,7 +1124,7 @@ async function createDefaultCustomerData(customerEmail) {
       });
       console.log(`✅ Created default profile in Firestore for: ${customerEmail}`);
     } catch (error) {
-      console.error('❌ Error creating default profile in Firestore:', error);
+      console.error('Error creating default profile in Firestore:', error);
     }
   }
   
@@ -1091,7 +1160,7 @@ async function getProductsFromFirestore() {
     console.log(`✅ Found ${products.length} products in Firestore`);
     return products;
   } catch (error) {
-    console.error('❌ Error fetching products:', error);
+    console.error('Error fetching products:', error);
     return [];
   }
 }
@@ -1113,7 +1182,7 @@ async function getUserIdFromEmail(email) {
     console.log(`✅ Found user ID: ${userId} for email: ${email}`);
     return userId;
   } catch (error) {
-    console.error('❌ Error getting user ID:', error);
+    console.error('Error getting user ID:', error);
     return null;
   }
 }
@@ -1126,7 +1195,7 @@ async function saveOrderToFirestore(orderData) {
     // Get userId from customerEmail
     const userId = await getUserIdFromEmail(orderData.customerEmail);
     if (!userId) {
-      console.error('❌ Cannot save order: User not found');
+      console.error('Cannot save order: User not found');
       return false;
     }
     
@@ -1142,7 +1211,7 @@ async function saveOrderToFirestore(orderData) {
     console.log(`✅ Order saved successfully: users/${userId}/orders/${orderData.id}`);
     return true;
   } catch (error) {
-    console.error('❌ Error saving order:', error);
+    console.error('Error saving order:', error);
     return false;
   }
 }
@@ -1162,7 +1231,7 @@ async function saveIssueToFirestore(issueData) {
     console.log(`✅ Issue saved successfully: ${issueData.id}`);
     return true;
   } catch (error) {
-    console.error('❌ Error saving issue:', error);
+    console.error('Error saving issue:', error);
     return false;
   }
 }
@@ -1175,7 +1244,7 @@ async function updateOrderStatusInFirestore(orderId, newStatus, customerEmail, a
     // Get userId from customerEmail
     const userId = await getUserIdFromEmail(customerEmail);
     if (!userId) {
-      console.error('❌ Cannot update order: User not found');
+      console.error('Cannot update order: User not found');
       return false;
     }
     
@@ -1190,7 +1259,7 @@ async function updateOrderStatusInFirestore(orderId, newStatus, customerEmail, a
     console.log(`✅ Order status updated successfully: users/${userId}/orders/${orderId}`);
     return true;
   } catch (error) {
-    console.error('❌ Error updating order status:', error);
+    console.error('Error updating order status:', error);
     return false;
   }
 }
@@ -1262,7 +1331,7 @@ async function sendCustomerWidget(visitorInfo) {
         {
           name: "error",
           layout: "info",
-          title: "❌ No Customer Data",
+          title: "No Customer Data",
           data: [
             { label: "Status", value: "Customer data not available" }
           ]
@@ -1371,12 +1440,8 @@ function createComprehensiveCustomerWidget(visitorInfo, customerData) {
       { label: "Phone", value: customerData.customerPhone || 'Not provided' },
       { label: "Member Since", value: customerData.analytics?.customerSince || 'Recently' },
       { label: "Loyalty Status", value: `${customerData.analytics?.loyaltyStatus || 'New'} Member` }
-    ],
-    actions: [
-      { label: "🔄 Return Order", name: "return_action" },
-      { label: "❌ Cancel Order", name: "cancel_action" },
-      { label: "📋 Other Options", name: "other_action" }
     ]
+    // Removed global Return/Cancel buttons - they now appear only on individual pending orders
   });
   
   // Orders Summary Section
@@ -1386,12 +1451,32 @@ function createComprehensiveCustomerWidget(visitorInfo, customerData) {
       name: "orders_summary",
       layout: "listing",
       title: `📦 Recent Orders (${customerData.orders.length} total)`,
-      data: recentOrders.map(order => ({
-        name: order.id,
-        title: `${getOrderStatusWithIcon(order.status)} Order ${order.id}`,
-        text: `₹${order.totalAmount} • ${new Date(order.orderDate).toLocaleDateString()}`,
-        subtext: `${order.paymentStatus} • ${order.trackingNumber || 'No tracking'}`
-      }))
+      data: recentOrders.map(order => {
+        // Check if order is pending/cancellable
+        const isPending = order.status === 'OrderStatus.pending' || 
+                         order.status === 'Pending' || 
+                         order.status === 'Processing';
+        
+        const orderItem = {
+          name: order.id,
+          title: `${getOrderStatusWithIcon(order.status)} Order ${order.id}`,
+          text: `₹${order.totalAmount} • ${new Date(order.orderDate).toLocaleDateString()}`,
+          subtext: `${order.paymentStatus} • ${order.trackingNumber || 'No tracking'}`
+        };
+        
+        // Add cancel button only for pending orders
+        if (isPending) {
+          orderItem.actions = [
+            {
+              label: "Cancel Order",
+              name: `QUICK_CANCEL:${order.id}`,
+              type: "postback"
+            }
+          ];
+        }
+        
+        return orderItem;
+      })
     });
   }
   
@@ -1449,12 +1534,27 @@ function createComprehensiveCustomerWidget(visitorInfo, customerData) {
       name: "issues",
       layout: "listing",
       title: `⚠️ Support Issues (${openIssues.length} open)`,
-      data: customerData.issues.slice(0, 3).map(issue => ({
-        name: issue.id,
-        title: `${getIssueIcon(issue.status)} ${issue.issueType}`,
-        text: issue.description,
-        subtext: `${issue.status} • ${new Date(issue.createdAt).toLocaleDateString()}`
-      }))
+      data: customerData.issues.slice(0, 3).map(issue => {
+        const issueItem = {
+          name: issue.id,
+          title: `${getIssueIcon(issue.status)} ${issue.issueType}`,
+          text: issue.description,
+          subtext: `${issue.status} • ${new Date(issue.createdAt).toLocaleDateString()}`
+        };
+        
+        // Add Cancel button if issue has an orderId (cancellation/return requests)
+        if (issue.orderId) {
+          issueItem.actions = [
+            {
+              label: "Cancel",
+              name: `CANCEL_ISSUE:${issue.id}:${issue.orderId}`,
+              type: "postback"
+            }
+          ];
+        }
+        
+        return issueItem;
+      })
     });
   }
   
@@ -1477,9 +1577,9 @@ function createAutoActionButtonsMessage(visitorInfo) {
         type: "postback"
       },
       {
-        label: "❌ Cancel Order", 
-        name: "cancel_action",
-        type: "postback"
+        label: "Cancel Order", 
+        name: "orderCancellationForm",
+        type: "form"
       },
       {
         label: "📋 Other Options",
@@ -1506,7 +1606,7 @@ function createActionButtonsMessage(visitorInfo, customerData) {
         ],
         actions: [
           { label: "🔄 Return Order", name: "return_action" },
-          { label: "❌ Cancel Order", name: "cancel_action" },
+          { label: "Cancel Order", name: "cancel_action" },
           { label: "📋 Other Options", name: "other_action" }
         ]
       }
@@ -1561,7 +1661,7 @@ function handleReturnAction(customerData, visitorInfo) {
   };
 }
 
-// ❌ HANDLE CANCEL ACTION - PRODUCTION READY WITH FIRESTORE
+// HANDLE CANCEL ACTION - PRODUCTION READY WITH FIRESTORE
 async function handleCancelAction(customerData, visitorInfo) {
   try {
     console.log('🔍 Fetching cancellable orders from Firestore for:', visitorInfo.email);
@@ -1611,13 +1711,13 @@ async function handleCancelAction(customerData, visitorInfo) {
               paymentStatus: orderData.paymentStatus
             });
           } else {
-            console.log(`    ❌ This order CANNOT be cancelled (status: ${status})`);
+            console.log(`    This order CANNOT be cancelled (status: ${status})`);
           }
         });
         
         console.log(`\n✅ Found ${cancellableOrders.length} cancellable orders from users/${userId}/orders`);
       } catch (firestoreError) {
-        console.error('❌ Firestore query failed:', firestoreError.message);
+        console.error('Firestore query failed:', firestoreError.message);
         // Fallback to customerData
         cancellableOrders = (customerData.orders || []).filter(order => 
           order.status === 'confirmed' || order.status === 'processing'
@@ -1635,7 +1735,7 @@ async function handleCancelAction(customerData, visitorInfo) {
         action: "reply",
         replies: [
           {
-            text: "📦 No orders available for cancellation.\n\n✅ Orders can only be cancelled if they are in:\n• Pending\n• Confirmed\n• Processing\n\n❌ Orders that are shipped, delivered, or already cancelled cannot be cancelled."
+            text: "📦 No orders available for cancellation.\n\n✅ Orders can only be cancelled if they are in:\n• Pending\n• Confirmed\n• Processing\n\nOrders that are shipped, delivered, or already cancelled cannot be cancelled."
           }
         ],
         suggestions: ["🏠 Back to Menu"]
@@ -1651,15 +1751,15 @@ async function handleCancelAction(customerData, visitorInfo) {
         }
       ],
       suggestions: cancellableOrders.map(order => 
-        `❌ Cancel ${order.id} | ${order.product_name} | ₹${order.total_amount}`
+        `Cancel ${order.id} | ${order.product_name} | ₹${order.total_amount}`
       ).concat(["🏠 Back to Menu"])
     };
     
   } catch (error) {
-    console.error('❌ Error in handleCancelAction:', error);
+    console.error('Error in handleCancelAction:', error);
     return {
       type: "message",
-      text: "❌ Error loading orders. Please try again.",
+      text: "Error loading orders. Please try again.",
       delay: 1000
     };
   }
@@ -1709,7 +1809,7 @@ async function handleOrderAction(action, orderId, visitorInfo) {
   const order = customerData.orders.find(o => o.id === orderId);
   
   if (!order) {
-    console.log('  ❌ Order not found in customer data');
+    console.log('  Order not found in customer data');
     console.log('  Available Order IDs:', customerData.orders?.map(o => o.id).join(', ') || 'None');
     return createErrorResponse('Order not found');
   }
@@ -1732,7 +1832,7 @@ async function handleOrderAction(action, orderId, visitorInfo) {
   return createErrorResponse('Unknown order action');
 }
 
-// ❌ HANDLE ORDER CANCELLATION LOGIC - SHOW FORM CONTROLLER
+// HANDLE ORDER CANCELLATION LOGIC - SHOW FORM CONTROLLER
 function handleOrderCancellation(order, visitorInfo) {
   console.log(`\n📋 handleOrderCancellation called`);
   console.log('  Order ID:', order.id);
@@ -1742,7 +1842,7 @@ function handleOrderCancellation(order, visitorInfo) {
   
   // Check if order is already shipped
   if (order.status === 'shipped' || order.status === 'out_for_delivery' || order.status === 'delivered') {
-    console.log('  ❌ Order cannot be cancelled - already shipped/delivered');
+    console.log('  Order cannot be cancelled - already shipped/delivered');
     return {
       type: "message",
       text: `📦 Order ${order.id} has already been shipped, so it cannot be cancelled.\n\nYou can request a return instead.`,
@@ -1751,17 +1851,17 @@ function handleOrderCancellation(order, visitorInfo) {
   }
   
   console.log('  ✅ Order is cancellable - triggering Form Controller');
-  console.log('  Form Controller: cancelform');
+  console.log('  Form Controller: orderCancellationForm');
   console.log('  Order data to pass:');
   console.log('    - Order ID:', order.id);
   console.log('    - Product:', order.items?.[0]?.productName || 'Product');
   console.log('    - Amount: ₹' + order.totalAmount);
   
-  // PRODUCTION: Trigger the existing "cancelform" Form Controller in SalesIQ
+  // PRODUCTION: Trigger the existing "orderCancellationForm" Form Controller in SalesIQ
   // This will close the bot and connect to human agent with the form
   return {
   type: "form",
-  name: "cancelform",
+  name: "orderCancellationForm",
   title: "Cancel Order",
   button_label: "Submit Cancellation",
   inputs: [
@@ -1861,7 +1961,7 @@ function getOrderStatusWithIcon(status) {
     'shipped': '🚚 Shipped',
     'out_for_delivery': '🏃 Out for Delivery',
     'delivered': '✅ Delivered',
-    'cancelled': '❌ Cancelled',
+    'cancelled': 'Cancelled',
     'returned': '↩️ Returned'
   };
   return statusMap[status] || status;
@@ -1900,7 +2000,7 @@ async function handleNotification(req, res) {
       message: 'Notification processed successfully'
     });
   } catch (error) {
-    console.error('❌ Notification error:', error);
+    console.error('Notification error:', error);
     return res.status(500).json({ error: 'Failed to process notification' });
   }
 }
@@ -1951,7 +2051,7 @@ app.post('/api/send-button-container', async (req, res) => {
       buttons: buttons
     });
   } catch (error) {
-    console.error('❌ Error sending button container:', error);
+    console.error('Error sending button container:', error);
     res.status(500).json({ error: 'Failed to send button container' });
   }
 });
@@ -1975,7 +2075,7 @@ app.post('/api/send-message', async (req, res) => {
       message: 'Bot message sent'
     });
   } catch (error) {
-    console.error('❌ Error sending bot message:', error);
+    console.error('Error sending bot message:', error);
     res.status(500).json({ error: 'Failed to send bot message' });
   }
 });
@@ -2011,7 +2111,7 @@ app.post('/api/button-click', async (req, res) => {
       response_message: responseMessage
     });
   } catch (error) {
-    console.error('❌ Error handling button click:', error);
+    console.error('Error handling button click:', error);
     res.status(500).json({ error: 'Failed to handle button click' });
   }
 });
@@ -2022,15 +2122,24 @@ app.post('/webhook', async (req, res) => {
     console.log('⏰ Timestamp:', new Date().toISOString());
     console.log('📍 From:', req.headers['x-forwarded-for'] || req.ip);
     console.log('🔐 Signature:', req.headers['x-siqsignature'] ? 'Present' : 'Missing');
-    console.log('\n📦 REQUEST BODY:');
-    console.log(JSON.stringify(req.body, null, 2));
-    console.log('\n');
-
+    
     const requestData = req.body || {};
     const handler = requestData.handler;
+    const operation = requestData.operation;
     const context = requestData.context || {};
     const formData = requestData.form_data;
     const formName = requestData.form_name;
+    
+    console.log('\n📋 REQUEST TYPE:');
+    console.log('  Handler:', handler || 'N/A');
+    console.log('  Operation:', operation || 'N/A');
+    console.log('  Has visitor?', !!requestData.visitor);
+    console.log('  Has message?', !!requestData.message);
+    console.log('  Has action?', !!requestData.action);
+    
+    console.log('\n📦 FULL REQUEST BODY:');
+    console.log(JSON.stringify(req.body, null, 2));
+    console.log('\n');
     
     const visitorInfo = extractVisitorInfo(context);
 
@@ -2055,7 +2164,9 @@ app.post('/webhook', async (req, res) => {
 
     // ✅ HANDLE REAL USER MESSAGES (from bot or mobile app)
     if (req.body.handler === "message" || req.body.operation === "message") {
-      console.log("✅ Real user message received");
+      console.log("\n" + "=".repeat(60));
+      console.log("🔔 MESSAGE RECEIVED AT:", new Date().toISOString());
+      console.log("=".repeat(60));
 
       // ✅ SAFE extraction from SalesIQ payload
       const visitor = req.body.visitor || {};
@@ -2073,7 +2184,10 @@ app.post('/webhook', async (req, res) => {
         "Guest";
 
       console.log("👤 Customer Name:", customerName);
-      console.log("💬 Message Text:", messageText);
+      console.log("📧 Customer Email:", visitor.email || 'N/A');
+      console.log("💬 Raw Message:", rawMessage);
+      console.log("💬 Normalized Message:", messageText);
+      console.log("=".repeat(60) + "\n");
       
       // Extract visitor info for database queries
       const visitorEmail = visitor.email || 'demo@customer.com';
@@ -2084,195 +2198,349 @@ app.post('/webhook', async (req, res) => {
       };
       
       // ✅ HANDLE MAIN MENU FIRST (before order selection)
-      if (messageText === "❌ cancel order" || (messageText.includes("cancel order") && !messageText.match(/(ord\d+)/i))) {
+      console.log('\n🔍 DEBUG: Checking if message is Cancel Order...');
+      console.log('  Message Text:', messageText);
+      console.log('  Matches "cancel order"?', messageText === "cancel order");
+      console.log('  Includes "cancel order"?', messageText.includes("cancel order"));
+      console.log('  Has order ID?', messageText.match(/(ord\d+)/i) !== null);
+      
+      if (messageText === "cancel order" || (messageText.includes("cancel order") && !messageText.match(/(ord\d+)/i))) {
+        console.log('\n✅ DEBUG: Cancel Order button clicked!');
         try {
-          console.log('🔍 User clicked Cancel Order - fetching customer data...');
+          console.log('🔍 Step 1: Fetching customer data for:', visitorEmail);
           const customerData = await getCustomerData(visitorEmail);
-          console.log('✅ Customer data fetched, calling handleCancelAction...');
+          console.log('✅ Step 2: Customer data fetched successfully');
+          console.log('  - Total Orders:', customerData.orders?.length || 0);
+          console.log('  - Customer Name:', customerData.name);
           
-          const cancelResponse = await handleCancelAction(customerData, visitorInfoForQuery);
+          // Get cancellable orders
+          const cancellableOrders = customerData.orders.filter(order => 
+            order.status !== 'Delivered' && 
+            order.status !== 'Cancelled' &&
+            !order.status.includes('cancelled')
+          );
           
-          console.log('\n✅ ===== SENDING CANCEL ORDER RESPONSE =====');
-          console.log('Response Type:', cancelResponse.type || cancelResponse.action);
-          console.log('Message:', cancelResponse.text || cancelResponse.replies?.[0]?.text);
-          console.log('Number of Suggestions:', cancelResponse.suggestions?.length || 0);
-          if (cancelResponse.suggestions && cancelResponse.suggestions.length > 0) {
-            console.log('Suggestions:');
-            cancelResponse.suggestions.forEach((sug, idx) => {
-              console.log(`  ${idx + 1}. "${sug}"`);
+          if (cancellableOrders.length === 0) {
+            return res.status(200).json({
+              action: "reply",
+              replies: [{
+                text: "You have no orders that can be cancelled.\n\nAll your orders are either delivered or already cancelled."
+              }],
+              suggestions: ["🏠 Back to Menu"]
             });
           }
-          console.log('\n📤 Full Response JSON:');
-          console.log(JSON.stringify(cancelResponse, null, 2));
+          
+          console.log('\n📋 Step 3: Showing cancellable orders...');
+          console.log('  - Cancellable Orders:', cancellableOrders.length);
+          
+          // Show list of orders to cancel
+          const orderSuggestions = cancellableOrders.map(order => 
+            `Cancel ${order.id} | ${order.items?.[0]?.productName || 'Product'} | ₹${order.totalAmount}`
+          );
+          
+          const response = {
+            action: "reply",
+            replies: [{
+              text: "📋 **Select an order to cancel:**\n\nChoose from your active orders below:"
+            }],
+            suggestions: [...orderSuggestions, "🏠 Back to Menu"]
+          };
+          
+          console.log('\n✅ Step 4: Order list created');
+          console.log('📤 Step 5: Sending response to SalesIQ');
+          console.log('Full Response JSON:');
+          console.log(JSON.stringify(response, null, 2));
           console.log('=======================================\n');
           
-          return res.status(200).json(cancelResponse);
+          return res.status(200).json(response);
         } catch (error) {
-          console.error('❌ Error in cancel order handler:', error);
+          console.error('\n❌❌ERROR IN CANCEL ORDER HANDLER ❌❌❌');
+          console.error('Error Message:', error.message);
+          console.error('Error Stack:', error.stack);
+          console.error('Error occurred at:', new Date().toISOString());
+          console.error('=======================================\n');
           return res.status(200).json({
             action: "reply",
-            replies: [
-              {
-                text: "❌ Error loading orders. Please try again later."
-              }
-            ],
+            replies: [{
+              text: "Error loading orders. Please try again later."
+            }],
             suggestions: ["🏠 Back to Menu"]
           });
         }
       }
       
       // ✅ HANDLE ORDER SELECTION FROM SUGGESTIONS (Cancel or Return with Order ID)
+      console.log('\n🔍 DEBUG: Checking if message has order ID...');
       const orderIdMatch = messageText.match(/(ord\d+)/i);
-      if (orderIdMatch && (messageText.includes('cancel') || messageText.includes('return') || messageText.startsWith('❌') || messageText.startsWith('🔄'))) {
+      console.log('  Order ID Match:', orderIdMatch ? orderIdMatch[1] : 'None');
+      
+      // Exclude RETURN_REASON, RETURN_PHOTO, RETURN_REFUND messages
+      const isReturnFlow = messageText.toUpperCase().startsWith('RETURN_REASON:') || 
+                          messageText.toUpperCase().startsWith('RETURN_PHOTO:') || 
+                          messageText.toUpperCase().startsWith('RETURN_REFUND:');
+      
+      if (orderIdMatch && !isReturnFlow && (messageText.includes('cancel') || messageText.includes('return') || messageText.startsWith('❌') || messageText.startsWith('🔄'))) {
+        console.log('\n✅ DEBUG: Order selected from list!');
+        
         // Detect action type
         const isCancel = messageText.includes('cancel') || messageText.startsWith('❌');
         const isReturn = messageText.includes('return') || messageText.startsWith('🔄');
 
         const orderId = orderIdMatch[1].toUpperCase();
-        console.log(`\n📦 ===== ORDER SELECTED =====`);
-        console.log('Order ID:', orderId);
-        console.log('Action:', isCancel ? 'CANCEL' : 'RETURN');
-        console.log('Customer:', visitorEmail);
+        console.log(`\n📦 ===== ORDER SELECTION DETAILS =====`);
+        console.log('Step 1: Order ID extracted:', orderId);
+        console.log('Step 2: Action Type:', isCancel ? 'CANCEL' : 'RETURN');
+        console.log('Step 3: Customer Email:', visitorEmail);
+        console.log('Step 4: Original Message:', messageText);
 
         // Fetch full order data from Firestore
+        console.log('\n🔄 Step 5: Fetching customer data from Firestore...');
         const customerData = await getCustomerData(visitorEmail);
+        console.log('✅ Step 6: Customer data fetched');
+        console.log('  - Total orders:', customerData.orders?.length || 0);
+        console.log('  - Available Order IDs:', customerData.orders?.map(o => o.id).join(', ') || 'None');
+        
+        console.log('\n🔍 Step 7: Looking for order:', orderId);
         const order = customerData.orders.find(o => o.id === orderId);
 
         if (!order) {
-          console.log('❌ Order not found in customer data');
+          console.error('\n❌❌ORDER NOT FOUND ❌❌❌');
+          console.error('  Searched for:', orderId);
+          console.error('  Available orders:', customerData.orders?.map(o => o.id) || []);
+          console.error('  Customer:', visitorEmail);
+          console.error('=======================================\n');
           return res.status(200).json({
             type: "message",
-            text: "❌ Order not found. Please try again."
+            text: "Order not found. Please try again."
           });
         }
 
-        console.log('✅ Order Found:');
-        console.log('  Product:', order.items?.[0]?.productName || 'Product');
-        console.log('  Amount: ₹' + order.totalAmount);
-        console.log('  Status:', order.status);
+        console.log('\n✅ Step 8: Order Found Successfully!');
+        console.log('  - Order ID:', order.id);
+        console.log('  - Product:', order.items?.[0]?.productName || 'Product');
+        console.log('  - Amount: ₹' + order.totalAmount);
+        console.log('  - Status:', order.status);
+        console.log('  - Payment Method:', order.paymentMethod || 'N/A');
 
         // Trigger SalesIQ Form Controller
         const actionText = isCancel ? 'cancellation' : 'return';
         const actionEmoji = isCancel ? '❌' : '🔄';
         
         if (isCancel) {
-          // Return SalesIQ Form Controller format (matching Zoho documentation)
-          console.log('📋 Returning SalesIQ Form for cancellation');
+          console.log('\n📋 Step 9: Checking shipping status from products collection...');
+          console.log('  - Order ID:', orderId);
+          console.log('  - Customer Email:', visitorEmail);
+          console.log('  - Total Products in Order:', order.items?.length || 0);
           
-          // Build inputs array (SalesIQ uses "inputs" not "fields")
-          const inputs = [
-            {
-              type: "text",
-              name: "order_id",
-              label: "Order ID",
-              value: orderId,
-              hint: "Order identification number",
-              mandatory: true,
-              editable: false
-            },
-            {
-              type: "text",
-              name: "product_name",
-              label: "Product Name",
-              value: order.items?.[0]?.productName || 'Product',
-              hint: "Product being cancelled",
-              mandatory: true,
-              editable: false
-            },
-            {
-              type: "text",
-              name: "amount_paid",
-              label: "Amount Paid",
-              value: `₹${order.totalAmount}`,
-              hint: "Total amount to be refunded",
-              mandatory: true,
-              editable: false
-            },
-            {
-              type: "dynamic_select",
-              name: "cancellation_reason",
-              label: "Cancellation Reason",
-              hint: "Why do you want to cancel?",
-              placeholder: "Select reason",
-              mandatory: true,
-              trigger_on_change: true,
-              options: [
-                {
-                  label: "Changed My Mind",
-                  value: "changed_mind"
-                },
-                {
-                  label: "Found Better Price",
-                  value: "better_price"
-                },
-                {
-                  label: "Ordered By Mistake",
-                  value: "mistake"
-                },
-                {
-                  label: "Delivery Too Late",
-                  value: "late_delivery"
-                },
-                {
-                  label: "Other Reason",
-                  value: "other"
+          // Check shipping status from products collection in Firestore
+          const shippedProducts = [];
+          
+          if (firebaseEnabled && db && order.items && order.items.length > 0) {
+            console.log('\n🔍 Fetching product details from Firestore products collection...');
+            
+            for (const item of order.items) {
+              const productId = item.productId || item.id;
+              console.log(`  - Checking product: ${productId}`);
+              
+              try {
+                const productDoc = await db.collection('products').doc(productId).get();
+                
+                if (productDoc.exists) {
+                  const productData = productDoc.data();
+                  console.log(`    ✅ Found: ${productData.name}`);
+                  console.log(`    📦 Shipping Status: ${productData.shipping_status}`);
+                  
+                  if (productData.shipping_status === 'Shipped' || productData.shipping_status === 'shipped') {
+                    shippedProducts.push({
+                      name: productData.name,
+                      shipping_status: productData.shipping_status,
+                      productId: productId
+                    });
+                    console.log(`    ⚠️ Product is SHIPPED - Cannot cancel!`);
+                  } else {
+                    console.log(`    ✅ Product not shipped - Can cancel`);
+                  }
+                } else {
+                  console.log(`    ⚠️ Product not found in products collection`);
                 }
-              ]
-            },
-            {
-              type: "select",
-              name: "refund_method",
-              label: "Refund Method",
-              hint: "How would you like to receive the refund?",
-              placeholder: "Select refund method",
-              mandatory: true,
-              trigger_on_change: true,
-              options: [
-                {
-                  label: "Original Payment Method",
-                  value: "original_payment"
-                },
-                {
-                  label: "Bank Transfer",
-                  value: "bank_transfer"
-                },
-                {
-                  label: "Store Credit",
-                  value: "store_credit"
-                }
-              ]
+              } catch (error) {
+                console.error(`    Error fetching product ${productId}:`, error.message);
+              }
             }
-          ];
+          }
           
-          const response = {
-            type: "form",
-            name: "cancelform",
-            title: "Cancel Order",
-            hint: "Please provide cancellation details",
-            button_label: "Submit Cancellation",
-            inputs: inputs
-          };
-
-          console.log('\n📤 Sending SalesIQ Form:');
-          console.log(JSON.stringify(response, null, 2));
-          console.log('=======================================\n');
-
-          return res.status(200).json(response);
-        } else {
-          // For return, show inline suggestions
+          console.log('\n📊 Shipping Status Summary:');
+          console.log('  - Total Products:', order.items?.length || 0);
+          console.log('  - Shipped Products:', shippedProducts.length);
+          
+          if (shippedProducts.length > 0) {
+            console.log('\n⚠️ Step 10: Products already shipped - Cannot cancel!');
+            console.log('  - Shipped Products:', shippedProducts.map(p => p.name).join(', '));
+            
+            // Build list of shipped products
+            const shippedProductsList = shippedProducts.map(p => 
+              `  • ${p.name} is ${p.shipping_status}`
+            ).join('\n');
+            
+            const response = {
+              action: "reply",
+              replies: [{
+                text: `⚠️ **Cannot Cancel Order ${orderId}**\n\n` +
+                      `📦 The following products have already been shipped:\n\n` +
+                      `${shippedProductsList}\n\n` +
+                      `**You cannot cancel this order** as the products are already shipped.\n\n` +
+                      `💬 If you have any queries, please connect with our human support agent by pressing **"Yes"** above.`
+              }],
+              suggestions: []
+            };
+            
+            console.log('\n📤 Sending "Cannot Cancel" response');
+            console.log('Full Response JSON:');
+            console.log(JSON.stringify(response, null, 2));
+            console.log('=======================================\n');
+            
+            return res.status(200).json(response);
+          }
+          
+          console.log('\n✅ Step 10: All products not shipped - Proceeding with cancellation...');
+          
+          // Store order context for next step
           const response = {
             action: "reply",
-            replies: [
-              {
-                text: `${actionEmoji} Order ${actionText.toUpperCase()} Request\n\n📦 Order Details:\n🆔 Order ID: ${orderId}\n📱 Product: ${order.items?.[0]?.productName || 'Product'}\n💰 Amount: ₹${order.totalAmount}\n📊 Status: ${order.status}\n\n❓ Please select your ${actionText} reason:`
-              }
-            ],
+            replies: [{
+              text: `**Cancel Order ${orderId}**\n\n` +
+                    `📦 Product: ${order.items?.[0]?.productName || order.items?.[0]?.name || 'Product'}\n` +
+                    `💰 Amount: ₹${order.totalAmount}\n` +
+                    `📊 Status: ${order.status}\n\n` +
+                    `❓ **Why do you want to cancel this order?**\n` +
+                    `Please select a reason:`
+            }],
             suggestions: [
-              "Product defective",
-              "Wrong item received",
-              "Product damaged",
-              "Not as described",
-              "Other reason"
+              `REASON:${orderId}:changed_my_mind:Changed my mind`,
+              `REASON:${orderId}:better_price:Found better price`,
+              `REASON:${orderId}:ordered_by_mistake:Ordered by mistake`,
+              `REASON:${orderId}:delivery_too_late:Delivery too late`,
+              `REASON:${orderId}:not_needed:Product not needed`,
+              `REASON:${orderId}:other:Other reason`,
+              "🏠 Back to Menu"
+            ]
+          };
+
+          console.log('\n✅ Step 10: Reason options created');
+          console.log('📤 Step 11: Sending response to SalesIQ');
+          console.log('Full Response JSON:');
+          console.log(JSON.stringify(response, null, 2));
+          console.log('=======================================\n');
+          
+          return res.status(200).json(response);
+        } else {
+          // For return order - check delivery status from products collection
+          console.log('\n📋 Step 9: Checking delivery status from products collection...');
+          console.log('  - Order ID:', orderId);
+          console.log('  - Customer Email:', visitorEmail);
+          console.log('  - Total Products in Order:', order.items?.length || 0);
+          
+          // Check delivery status from products collection in Firestore
+          const notDeliveredProducts = [];
+          
+          if (firebaseEnabled && db && order.items && order.items.length > 0) {
+            console.log('\n🔍 Fetching product details from Firestore products collection...');
+            
+            for (const item of order.items) {
+              const productId = item.productId || item.id;
+              console.log(`  - Checking product: ${productId}`);
+              
+              try {
+                const productDoc = await db.collection('products').doc(productId).get();
+                
+                if (productDoc.exists) {
+                  const productData = productDoc.data();
+                  console.log(`    ✅ Found: ${productData.name}`);
+                  console.log(`    📦 Delivery Status: ${productData.delivery_status}`);
+                  
+                  if (productData.delivery_status !== 'Delivered' && productData.delivery_status !== 'delivered') {
+                    notDeliveredProducts.push({
+                      name: productData.name,
+                      delivery_status: productData.delivery_status,
+                      productId: productId
+                    });
+                    console.log(`    ⚠️ Product NOT delivered - Cannot return!`);
+                  } else {
+                    console.log(`    ✅ Product delivered - Can return`);
+                  }
+                } else {
+                  console.log(`    ⚠️ Product not found in products collection`);
+                  notDeliveredProducts.push({
+                    name: item.productName || item.name || 'Product',
+                    delivery_status: 'Unknown',
+                    productId: productId
+                  });
+                }
+              } catch (error) {
+                console.error(`    Error fetching product ${productId}:`, error.message);
+                notDeliveredProducts.push({
+                  name: item.productName || item.name || 'Product',
+                  delivery_status: 'Error',
+                  productId: productId
+                });
+              }
+            }
+          }
+          
+          console.log('\n📊 Delivery Status Summary:');
+          console.log('  - Total Products:', order.items?.length || 0);
+          console.log('  - Not Delivered Products:', notDeliveredProducts.length);
+          
+          if (notDeliveredProducts.length > 0) {
+            console.log('\n⚠️ Step 10: Products not delivered - Cannot return!');
+            console.log('  - Not Delivered Products:', notDeliveredProducts.map(p => p.name).join(', '));
+            
+            // Build list of not delivered products
+            const notDeliveredList = notDeliveredProducts.map(p => 
+              `  • ${p.name} (${p.delivery_status})`
+            ).join('\n');
+            
+            const response = {
+              action: "reply",
+              replies: [{
+                text: `⚠️ **Cannot Return Order ${orderId}**\n\n` +
+                      `📦 The following products have not been delivered yet:\n\n` +
+                      `${notDeliveredList}\n\n` +
+                      `**You can only return delivered products.**\n\n` +
+                      `💬 If you have any queries, please connect with our human support agent.`
+              }],
+              suggestions: ["🏠 Back to Menu", "📞 Contact Support"]
+            };
+            
+            console.log('\n📤 Sending "Cannot Return" response');
+            console.log('Full Response JSON:');
+            console.log(JSON.stringify(response, null, 2));
+            console.log('=======================================\n');
+            
+            return res.status(200).json(response);
+          }
+          
+          console.log('\n✅ Step 10: All products delivered - Proceeding with return...');
+          
+          // Show return reason options
+          const response = {
+            action: "reply",
+            replies: [{
+              text: `🔄 **Return Order ${orderId}**\n\n` +
+                    `📦 Product: ${order.items?.[0]?.productName || order.items?.[0]?.name || 'Product'}\n` +
+                    `💰 Amount: ₹${order.totalAmount}\n` +
+                    `📊 Status: ${order.status}\n\n` +
+                    `❓ **Why do you want to return this order?**\n` +
+                    `Please select a reason:`
+            }],
+            suggestions: [
+              `RETURN_REASON:${orderId}:defective:Product defective`,
+              `RETURN_REASON:${orderId}:wrong_item:Wrong item received`,
+              `RETURN_REASON:${orderId}:damaged:Product damaged`,
+              `RETURN_REASON:${orderId}:not_described:Not as described`,
+              `RETURN_REASON:${orderId}:quality_issue:Quality issue`,
+              `RETURN_REASON:${orderId}:other:Other reason`,
+              "🏠 Back to Menu"
             ]
           };
 
@@ -2284,59 +2552,424 @@ app.post('/webhook', async (req, res) => {
         }
       }
 
-      // ✅ HANDLE CANCELLATION REASON SELECTION
-      const cancellationReasons = [
-        "changed my mind",
-        "found better price", 
-        "ordered by mistake",
-        "delivery too late",
-        "other reason"
-      ];
-      
-      if (cancellationReasons.some(reason => messageText.includes(reason))) {
+      // ✅ HANDLE CANCELLATION REASON SELECTION (Format: REASON:ORD123:reason_code:Display Text)
+      if (messageText.toUpperCase().startsWith('REASON:')) {
         console.log('\n💬 Cancellation reason received:', messageText);
         
-        // Get the last order from customer data (the one they just selected)
-        const customerData = await getCustomerData(visitorEmail);
-        const lastOrder = customerData.orders?.[0]; // Most recent order
+        // Parse: REASON:ORD123:changed_my_mind:Changed my mind
+        const parts = messageText.split(':');
+        if (parts.length < 4) {
+          return res.status(200).json({
+            action: "reply",
+            replies: [{ text: "Invalid selection. Please try again." }],
+            suggestions: ["🏠 Back to Menu"]
+          });
+        }
         
-        if (lastOrder) {
-          // Process cancellation immediately
-          const cancellationData = {
-            order_id: lastOrder.id,
-            user_id: visitorEmail,
-            action: 'cancel',
-            cancellation_reason: messageText,
-            refund_method: 'original_payment',
-            idempotency_token: `cancel_${Date.now()}_${lastOrder.id}`
-          };
+        const orderId = parts[1].toUpperCase();
+        const reasonCode = parts[2];
+        const reasonDisplay = parts.slice(3).join(':');
+        
+        console.log('  Order ID:', orderId);
+        console.log('  Reason Code:', reasonCode);
+        console.log('  Reason Display:', reasonDisplay);
+        
+        // Show refund method options
+        const response = {
+          action: "reply",
+          replies: [{
+            text: `💳 **Select Refund Method**\n\n📦 Order: ${orderId}\n📝 Reason: ${reasonDisplay}\n\nHow would you like to receive your refund?`
+          }],
+          suggestions: [
+            `REFUND:${orderId}:${reasonCode}:original_payment:Original Payment Method`,
+            `REFUND:${orderId}:${reasonCode}:store_credit:Store Credit`,
+            `REFUND:${orderId}:${reasonCode}:bank_transfer:Bank Transfer`,
+            "🏠 Back to Menu"
+          ]
+        };
+        
+        console.log('\n✅ Refund method options created');
+        console.log('📤 Sending response:', JSON.stringify(response, null, 2));
+        
+        return res.status(200).json(response);
+      }
+      
+      // ✅ HANDLE REFUND METHOD SELECTION AND PROCESS CANCELLATION (Format: REFUND:ORD123:reason_code:refund_method:Display Text)
+      if (messageText.toUpperCase().startsWith('REFUND:')) {
+        console.log('\n💳 Refund method received:', messageText);
+        
+        // Parse: REFUND:ORD123:changed_my_mind:original_payment:Original Payment Method
+        const parts = messageText.split(':');
+        if (parts.length < 5) {
+          return res.status(200).json({
+            action: "reply",
+            replies: [{ text: "Invalid selection. Please try again." }],
+            suggestions: ["🏠 Back to Menu"]
+          });
+        }
+        
+        const orderId = parts[1].toUpperCase();
+        const reasonCode = parts[2];
+        const refundMethod = parts[3];
+        const refundDisplay = parts.slice(4).join(':');
+        
+        console.log('  Order ID:', orderId);
+        console.log('  Reason Code:', reasonCode);
+        console.log('  Refund Method:', refundMethod);
+        console.log('  Refund Display:', refundDisplay);
+        
+        // Get order details
+        console.log('📥 Fetching customer data...');
+        const customerData = await getCustomerData(visitorEmail);
+        console.log('📥 Customer data received, finding order...');
+        console.log('📦 Available orders:', customerData.orders.map(o => o.id).join(', '));
+        console.log('🔍 Looking for order:', orderId);
+        
+        // Case-insensitive order matching
+        const order = customerData.orders.find(o => o.id.toUpperCase() === orderId.toUpperCase());
+        
+        if (!order) {
+          console.log('Order not found in customer data');
+          console.log('Searched for:', orderId);
+          console.log('Available orders:', customerData.orders.map(o => o.id));
+          return res.status(200).json({
+            action: "reply",
+            replies: [{ text: "Order not found. Please try again." }],
+            suggestions: ["🏠 Back to Menu"]
+          });
+        }
+        
+        console.log('✅ Order matched:', order.id);
+        
+        console.log('✅ Order found, processing cancellation...');
+        
+        // Process cancellation - use the actual order ID from Firestore (uppercase)
+        const cancellationData = {
+          order_id: order.id,  // Use actual order ID from Firestore
+          user_id: visitorEmail,
+          action: 'cancel',
+          cancellation_reason: reasonCode,
+          refund_method: refundMethod,
+          amount: order.totalAmount || 0,  // Include order amount
+          payment_method: order.paymentMethod || 'N/A',  // Include payment method
+          idempotency_token: `cancel_${Date.now()}_${order.id}`
+        };
+        
+        console.log('🔄 Calling processCancellation...');
+        const result = await processCancellation(cancellationData);
+        console.log('✅ processCancellation completed:', result);
+        
+        if (result.success) {
+          const successMessage = `✅ Successfully submitted your cancellation request!\n\n🆔 Order ID: ${order.id}\n📦 Product: ${order.items?.[0]?.productName || 'Product'}\n💰 Amount: ₹${order.totalAmount}\n💳 Payment Method: ${order.paymentMethod || 'N/A'}\n📄 Reference: ${result.refundReference}\n🔁 Refund Method: ${cancellationData.refund_method.replace('_', ' ').toUpperCase()}\n\n👆 To continue with the process and connect with a human agent, please press **"Yes"** above.`;
           
-          const result = await processCancellation(cancellationData);
+          console.log('📤 Sending success response...');
+          return res.status(200).json({
+            action: "reply",
+            replies: [
+              {
+                text: successMessage
+              }
+            ]
+          });
+        } else {
+          console.log('Cancellation failed:', result.message || result.error);
+          return res.status(200).json({
+            action: "reply",
+            replies: [{ text: `Failed to submit cancellation request: ${result.message || result.error}` }],
+            suggestions: ["🏠 Back to Menu"]
+          });
+        }
+      }
+      
+      // ✅ HANDLE RETURN REASON SELECTION (Format: RETURN_REASON:ORD123:reason_code:Display Text)
+      if (messageText.toUpperCase().startsWith('RETURN_REASON:')) {
+        console.log('\n💬 Return reason received:', messageText);
+        
+        // Parse: RETURN_REASON:ORD123:defective:Product defective
+        const parts = messageText.split(':');
+        if (parts.length < 4) {
+          return res.status(200).json({
+            action: "reply",
+            replies: [{ text: "Invalid selection. Please try again." }],
+            suggestions: ["🏠 Back to Menu"]
+          });
+        }
+        
+        const orderId = parts[1].toUpperCase();
+        const reasonCode = parts[2];
+        const reasonDisplay = parts.slice(3).join(':');
+        
+        console.log('  Order ID:', orderId);
+        console.log('  Reason Code:', reasonCode);
+        console.log('  Reason Display:', reasonDisplay);
+        
+        // Show refund method options directly (skip photo upload)
+        const response = {
+          action: "reply",
+          replies: [{
+            text: `💳 **Select Refund Method**\n\n` +
+                  `📦 Order: ${orderId}\n` +
+                  `📝 Reason: ${reasonDisplay}\n\n` +
+                  `How would you like to receive your refund?`
+          }],
+          suggestions: [
+            `RETURN_REFUND:${orderId}:${reasonCode}:original_payment:Original Payment Method`,
+            `RETURN_REFUND:${orderId}:${reasonCode}:store_credit:Store Credit`,
+            `RETURN_REFUND:${orderId}:${reasonCode}:bank_transfer:Bank Transfer`,
+            "🏠 Back to Menu"
+          ]
+        };
+        
+        console.log('\n✅ Refund method options created');
+        console.log('📤 Sending response:', JSON.stringify(response, null, 2));
+        
+        return res.status(200).json(response);
+      }
+      
+      // ✅ HANDLE RETURN REFUND METHOD AND PROCESS RETURN (Format: RETURN_REFUND:ORD123:reason_code:refund_method:Display Text)
+      if (messageText.toUpperCase().startsWith('RETURN_REFUND:')) {
+        console.log('\n💳 Return refund method received:', messageText);
+        
+        // Parse: RETURN_REFUND:ORD123:defective:original_payment:Original Payment Method
+        const parts = messageText.split(':');
+        if (parts.length < 5) {
+          return res.status(200).json({
+            action: "reply",
+            replies: [{ text: "Invalid selection. Please try again." }],
+            suggestions: ["🏠 Back to Menu"]
+          });
+        }
+        
+        const orderId = parts[1].toUpperCase();
+        const reasonCode = parts[2];
+        const refundMethod = parts[3];
+        const refundDisplay = parts.slice(4).join(':');
+        
+        console.log('  Order ID:', orderId);
+        console.log('  Reason Code:', reasonCode);
+        console.log('  Refund Method:', refundMethod);
+        console.log('  Refund Display:', refundDisplay);
+        
+        try {
+          // Get order details
+          console.log('📥 Fetching customer data...');
+          const customerData = await getCustomerData(visitorEmail);
+          const order = customerData.orders.find(o => o.id.toUpperCase() === orderId.toUpperCase());
           
-          if (result.success) {
+          if (!order) {
             return res.status(200).json({
               action: "reply",
-              replies: [
-                {
-                  text: `✅ Order ${lastOrder.id} has been cancelled successfully!\n\n💰 Refund: ₹${lastOrder.totalAmount}\n📄 Reference: ${result.refundReference}\n🔁 Method: Original Payment\n\n⏱️ Refund will be processed within 5-7 business days.`
-                }
-              ],
+              replies: [{ text: "Order not found. Please try again." }],
               suggestions: ["🏠 Back to Menu"]
             });
           }
+          
+          console.log('✅ Order found, processing return...');
+          
+          // Save return request to Firestore issues collection
+          const returnReference = `RET_${orderId}_${Date.now()}`;
+          
+          // Get reason display name
+          const reasonMap = {
+            'defective': 'Product defective',
+            'wrong_item': 'Wrong item received',
+            'damaged': 'Product damaged',
+            'not_described': 'Not as described',
+            'quality_issue': 'Quality issue',
+            'other': 'Other reason'
+          };
+          const reasonDisplayName = reasonMap[reasonCode] || reasonCode;
+          
+          await saveIssueToFirestore({
+            id: `RETURN_${Date.now()}`,
+            customerEmail: visitorEmail,
+            orderId: orderId,
+            issueType: 'Order Return',
+            description: `Customer requested order return. Reason: ${reasonDisplayName}`,
+            status: 'Pending Review',
+            resolution: `Awaiting human agent review. Reference: ${returnReference}`,
+            returnReason: reasonCode,
+            returnReasonDisplay: reasonDisplayName,
+            refundMethod: refundMethod,
+            refundMethodDisplay: refundDisplay,
+            returnReference: returnReference,
+            amount: order.totalAmount || 0,
+            paymentMethod: order.paymentMethod || 'N/A',
+            source: 'salesiq_chat',
+            createdAt: new Date().toISOString()
+          });
+          
+          console.log('✅ Return request saved to Firestore');
+          
+          // Send confirmation message with all details
+          return res.status(200).json({
+            action: "reply",
+            replies: [{
+              text: `✅ **Return Request Submitted Successfully!**\n\n` +
+                    `🆔 Order ID: ${orderId}\n` +
+                    `📦 Product: ${order.items?.[0]?.productName || order.items?.[0]?.name || 'Product'}\n` +
+                    `💰 Amount: ₹${order.totalAmount}\n` +
+                    `💳 Payment Method: ${order.paymentMethod || 'N/A'}\n` +
+                    `📝 Return Reason: ${reasonDisplayName}\n` +
+                    `🔁 Refund Method: ${refundDisplay}\n` +
+                    `📄 Reference: ${returnReference}\n\n` +
+                    `Your return request has been submitted for review.\n\n` +
+                    `👆 **To proceed further and connect with a human agent, please press "Yes" above and upload the image.**`
+            }],
+            suggestions: []
+          });
+        } catch (error) {
+          console.error('Error processing return:', error);
+          return res.status(200).json({
+            action: "reply",
+            replies: [{
+              text: "Failed to process return request. Please try again or contact support."
+            }],
+            suggestions: ["🏠 Back to Menu", "📞 Contact Support"]
+          });
         }
-        
-        return res.status(200).json({
-          type: "message",
-          text: "❌ Unable to process cancellation. Please try again or contact support."
-        });
       }
 
       
-      if (messageText === "🔄 return order" || messageText.includes("return order")) {
-        const customerData = await getCustomerData(visitorEmail);
-        const returnResponse = handleReturnAction(customerData, visitorInfoForQuery);
-        return res.status(200).json(returnResponse);
+      // ✅ HANDLE RETURN ORDER - Show delivered orders only
+      if (messageText === "🔄 return order" || (messageText.includes("return order") && !messageText.match(/(ord\d+)/i))) {
+        console.log('\n✅ DEBUG: Return Order button clicked!');
+        try {
+          console.log('🔍 Step 1: Fetching customer data for:', visitorEmail);
+          const customerData = await getCustomerData(visitorEmail);
+          console.log('✅ Step 2: Customer data fetched successfully');
+          console.log('  - Total Orders:', customerData.orders?.length || 0);
+          
+          // Check delivery status from products collection for ALL orders
+          console.log('\n🔍 Step 3: Checking delivery status from products collection...');
+          const deliveredOrders = [];
+          const startTime = Date.now();
+          
+          if (firebaseEnabled && db && customerData.orders && customerData.orders.length > 0) {
+            // Fetch all products in parallel for all orders
+            const allProductIds = new Set();
+            customerData.orders.forEach(order => {
+              order.items?.forEach(item => {
+                const productId = item.productId || item.id;
+                if (productId) allProductIds.add(productId);
+              });
+            });
+            
+            console.log(`  - Fetching ${allProductIds.size} unique products...`);
+            
+            // Fetch all products at once
+            const productCache = {};
+            const productFetchPromises = Array.from(allProductIds).map(async (productId) => {
+              try {
+                const productDoc = await db.collection('products').doc(productId).get();
+                if (productDoc.exists) {
+                  productCache[productId] = productDoc.data();
+                }
+              } catch (error) {
+                console.error(`Error fetching product ${productId}:`, error.message);
+              }
+            });
+            
+            await Promise.all(productFetchPromises);
+            console.log(`  - Fetched ${Object.keys(productCache).length} products`);
+            
+            // Now check each order using the cache
+            for (const order of customerData.orders) {
+              if (!order.items || order.items.length === 0) continue;
+              
+              let allDelivered = true;
+              const productStatuses = [];
+              
+              for (const item of order.items) {
+                const productId = item.productId || item.id;
+                const productData = productCache[productId];
+                
+                if (productData) {
+                  const deliveryStatus = productData.delivery_status || 'Unknown';
+                  productStatuses.push(`${productData.name}: ${deliveryStatus}`);
+                  
+                  if (deliveryStatus !== 'Delivered' && deliveryStatus !== 'delivered') {
+                    allDelivered = false;
+                  }
+                } else {
+                  productStatuses.push(`${productId}: Not found`);
+                  allDelivered = false;
+                }
+              }
+              
+              console.log(`  - Order ${order.id}: ${productStatuses.join(', ')} → ${allDelivered ? '✅ Delivered' : 'Not delivered'}`);
+              
+              if (allDelivered) {
+                deliveredOrders.push(order);
+              }
+            }
+          }
+          
+          const elapsedTime = Date.now() - startTime;
+          console.log(`⏱️ Product verification completed in ${elapsedTime}ms`);
+          
+          console.log('\n📊 Summary:');
+          console.log('  - Total Orders:', customerData.orders?.length || 0);
+          console.log('  - Delivered Orders:', deliveredOrders.length);
+          
+          if (deliveredOrders.length === 0) {
+            console.log('\n⚠️ No delivered orders found - sending "no orders" message');
+            const noOrdersResponse = {
+              action: "reply",
+              replies: [{
+                text: "You have no delivered orders that can be returned.\n\nOnly delivered orders are eligible for return."
+              }],
+              suggestions: ["🏠 Back to Menu"]
+            };
+            console.log('📤 Response:', JSON.stringify(noOrdersResponse, null, 2));
+            return res.status(200).json(noOrdersResponse);
+          }
+          
+          console.log('\n📋 Step 4: Showing delivered orders...');
+          
+          // Show list of delivered orders
+          const orderSuggestions = deliveredOrders.map(order => 
+            `🔄 Return ${order.id} | ${order.items?.[0]?.productName || order.items?.[0]?.name || 'Product'} | ₹${order.totalAmount}`
+          );
+          
+          console.log('  - Created suggestions:', orderSuggestions);
+          
+          const response = {
+            action: "reply",
+            replies: [{
+              text: "📋 **Select an order to return:**\n\nChoose from your delivered orders below:"
+            }],
+            suggestions: [...orderSuggestions, "🏠 Back to Menu"]
+          };
+          
+          console.log('\n✅ Step 5: Delivered order list created');
+          console.log('📤 Sending response to SalesIQ');
+          console.log('⏱️ Total time elapsed:', Date.now() - startTime, 'ms');
+          console.log('📦 Response structure:');
+          console.log('  - Action:', response.action);
+          console.log('  - Replies count:', response.replies?.length);
+          console.log('  - Suggestions count:', response.suggestions?.length);
+          console.log('\n📋 Full Response JSON:');
+          console.log(JSON.stringify(response, null, 2));
+          console.log('=======================================\n');
+          
+          // Send response immediately
+          res.status(200).json(response);
+          console.log('✅ Response sent to SalesIQ successfully');
+          return;
+        } catch (error) {
+          console.error('\n❌❌ERROR IN RETURN ORDER HANDLER ❌❌❌');
+          console.error('Error Message:', error.message);
+          console.error('Error Stack:', error.stack);
+          console.error('=======================================\n');
+          return res.status(200).json({
+            action: "reply",
+            replies: [{
+              text: "Error loading orders. Please try again later."
+            }],
+            suggestions: ["🏠 Back to Menu"]
+          });
+        }
       }
       
       if (messageText === "📋 other options" || messageText.includes("other options")) {
@@ -2356,7 +2989,7 @@ app.post('/webhook', async (req, res) => {
           ],
           suggestions: [
             "🔄 Return Order",
-            "❌ Cancel Order",
+            "Cancel Order",
             "📋 Other Options"
           ]
         };
@@ -2372,7 +3005,7 @@ app.post('/webhook', async (req, res) => {
           }
         ],
         suggestions: [
-          "❌ Cancel Order",
+          "Cancel Order",
           "🔄 Return Order",
           "📋 Other Options"
         ]
@@ -2464,6 +3097,230 @@ app.post('/webhook', async (req, res) => {
         const widgetResponse = await sendCustomerWidget(visitorInfo);
         return res.status(200).json(widgetResponse);
       }
+      
+      // Handle custom form submission
+      if (action === 'cancel_order_submit') {
+        console.log('\n📋 ===== CUSTOM FORM SUBMITTED =====');
+        console.log('Form Data:', requestData.postback.data);
+        
+        const formData = requestData.postback.data || {};
+        const orderId = formData.order_id;
+        const cancellationReason = formData.cancellation_reason;
+        const reasonDetails = formData.reason_details || '';
+        const refundMethod = formData.refund_method;
+        
+        console.log('Order ID:', orderId);
+        console.log('Reason:', cancellationReason);
+        console.log('Details:', reasonDetails);
+        console.log('Refund Method:', refundMethod);
+        
+        try {
+          // Fetch customer data
+          const customerData = await getCustomerData(visitorInfo.email);
+          const order = customerData.orders.find(o => o.id === orderId);
+          
+          if (!order) {
+            return res.status(200).json({
+              action: "reply",
+              replies: [{
+                text: "Order not found. Please try again."
+              }],
+              suggestions: ["🏠 Back to Menu"]
+            });
+          }
+          
+          // Process cancellation
+          const cancellationData = {
+            orderId: orderId,
+            customerEmail: visitorInfo.email,
+            cancellationReason: cancellationReason,
+            reasonDetails: reasonDetails,
+            refundMethod: refundMethod,
+            amount: order.totalAmount,
+            paymentMethod: order.paymentMethod || 'Unknown',
+            source: 'salesiq_chat'
+          };
+          
+          console.log('\n🔄 Processing cancellation...');
+          const result = await processCancellation(cancellationData);
+          
+          console.log('✅ Cancellation processed:', result.refundReference);
+          
+          return res.status(200).json({
+            action: "reply",
+            replies: [{
+              text: `✅ **Cancellation Request Submitted Successfully!**\n\n` +
+                    `📦 Order: ${orderId}\n` +
+                    `💰 Amount: ₹${order.totalAmount}\n` +
+                    `🔄 Refund Method: ${refundMethod.replace('_', ' ')}\n` +
+                    `📝 Reference: ${result.refundReference}\n\n` +
+                    `Your refund will be processed within 5-7 business days.`
+            }],
+            suggestions: ["🏠 Back to Menu", "📞 Contact Support"]
+          });
+        } catch (error) {
+          console.error('Error processing cancellation:', error);
+          return res.status(200).json({
+            action: "reply",
+            replies: [{
+              text: "Failed to process cancellation. Please try again or contact support."
+            }],
+            suggestions: ["🏠 Back to Menu", "📞 Contact Support"]
+          });
+        }
+      }
+      
+      // ✅ HANDLE QUICK CANCEL FROM WIDGET (Direct cancellation without asking reason)
+      if (action && action.startsWith('QUICK_CANCEL:')) {
+        console.log('\n⚡ ===== QUICK CANCEL TRIGGERED =====');
+        console.log('Action:', action);
+        
+        const orderId = action.replace('QUICK_CANCEL:', '');
+        console.log('Order ID to cancel:', orderId);
+        console.log('Customer Email:', visitorInfo.email);
+        
+        try {
+          // Fetch customer data and order
+          const customerData = await getCustomerData(visitorInfo.email);
+          const order = customerData.orders.find(o => o.id === orderId);
+          
+          if (!order) {
+            return res.status(200).json({
+              action: "reply",
+              replies: [{
+                text: "Order not found. Please try again."
+              }],
+              suggestions: ["🏠 Back to Menu"]
+            });
+          }
+          
+          console.log('✅ Order found:', order.id);
+          console.log('Order Amount:', order.totalAmount);
+          console.log('Payment Method:', order.paymentMethod);
+          
+          // Process immediate cancellation with default values
+          const cancellationData = {
+            order_id: order.id,
+            user_id: visitorInfo.email,
+            action: 'cancel',
+            cancellation_reason: 'customer_request',
+            refund_method: 'original_payment',
+            amount: order.totalAmount || 0,
+            payment_method: order.paymentMethod || 'N/A',
+            idempotency_token: `quick_cancel_${Date.now()}_${order.id}`
+          };
+          
+          console.log('\n🔄 Processing quick cancellation...');
+          const result = await processCancellation(cancellationData);
+          console.log('✅ Cancellation result:', result);
+          
+          if (result.success) {
+            // Task 4 & 5: Delete from Firestore (orders and issues)
+            console.log('\n🗑️ Deleting order from Firestore...');
+            await deleteOrderFromFirestore(visitorInfo.email, order.id);
+            
+            // Task 6: Send success message
+            return res.status(200).json({
+              action: "reply",
+              replies: [{
+                text: `✅ **Order Cancelled Successfully!**\n\n` +
+                      `🆔 Order ID: ${order.id}\n` +
+                      `📦 Product: ${order.items?.[0]?.productName || 'Product'}\n` +
+                      `💰 Amount: ₹${order.totalAmount}\n` +
+                      `💳 Payment Method: ${order.paymentMethod || 'N/A'}\n` +
+                      `📄 Reference: ${result.refundReference}\n` +
+                      `🔁 Refund Method: Original Payment Method\n\n` +
+                      `Your refund will be processed within 5-7 business days.\n` +
+                      `The order has been removed from your account.`
+              }],
+              suggestions: ["🏠 Back to Menu", "📞 Contact Support"]
+            });
+          } else {
+            return res.status(200).json({
+              action: "reply",
+              replies: [{
+                text: `Failed to cancel order: ${result.message || result.error}`
+              }],
+              suggestions: ["🏠 Back to Menu", "📞 Contact Support"]
+            });
+          }
+        } catch (error) {
+          console.error('Error in quick cancel:', error);
+          return res.status(200).json({
+            action: "reply",
+            replies: [{
+              text: "Failed to cancel order. Please try again or contact support."
+            }],
+            suggestions: ["🏠 Back to Menu", "📞 Contact Support"]
+          });
+        }
+      }
+      
+      // ✅ HANDLE CANCEL ISSUE FROM SUPPORT ISSUES (Delete order and issue)
+      if (action && action.startsWith('CANCEL_ISSUE:')) {
+        console.log('\n🗑️ ===== CANCEL ISSUE TRIGGERED =====');
+        console.log('Action:', action);
+        
+        // Parse: CANCEL_ISSUE:issueId:orderId
+        const parts = action.split(':');
+        if (parts.length < 3) {
+          return res.status(200).json({
+            action: "reply",
+            replies: [{
+              text: "Invalid issue format. Please try again."
+            }],
+            suggestions: ["🏠 Back to Menu"]
+          });
+        }
+        
+        const issueId = parts[1];
+        const orderId = parts[2];
+        
+        console.log('Issue ID:', issueId);
+        console.log('Order ID:', orderId);
+        console.log('Customer Email:', visitorInfo.email);
+        
+        try {
+          // Delete order and issue from Firestore
+          console.log('\n🗑️ Deleting order and issue from Firestore...');
+          const deleteResult = await deleteOrderFromFirestore(visitorInfo.email, orderId);
+          
+          if (deleteResult.success) {
+            console.log('✅ Order and issue deleted successfully');
+            
+            // Send confirmation message to customer
+            return res.status(200).json({
+              action: "reply",
+              replies: [{
+                text: `✅ **Cancellation Request Removed**\n\n` +
+                      `🆔 Order ID: ${orderId}\n` +
+                      `🎫 Issue ID: ${issueId}\n\n` +
+                      `The order and cancellation request have been removed from your account.\n` +
+                      `If you need further assistance, please contact support.`
+              }],
+              suggestions: ["🏠 Back to Menu", "📞 Contact Support"]
+            });
+          } else {
+            console.log('Failed to delete:', deleteResult.message);
+            return res.status(200).json({
+              action: "reply",
+              replies: [{
+                text: `Failed to remove issue: ${deleteResult.message || 'Unknown error'}`
+              }],
+              suggestions: ["🏠 Back to Menu", "📞 Contact Support"]
+            });
+          }
+        } catch (error) {
+          console.error('Error canceling issue:', error);
+          return res.status(200).json({
+            action: "reply",
+            replies: [{
+              text: "Failed to remove issue. Please try again or contact support."
+            }],
+            suggestions: ["🏠 Back to Menu", "📞 Contact Support"]
+          });
+        }
+      }
     }
 
     // ✅ DEFAULT FALLBACK → SHOW CUSTOMER WIDGET
@@ -2478,7 +3335,7 @@ app.post('/webhook', async (req, res) => {
     return res.status(200).json(widgetResponse);
 
   } catch (error) {
-    console.error('❌ WEBHOOK ERROR:', error.message);
+    console.error('WEBHOOK ERROR:', error.message);
 
     return res.status(200).json({
       type: 'widget_detail',
@@ -2486,7 +3343,7 @@ app.post('/webhook', async (req, res) => {
         {
           name: 'error',
           layout: 'info',
-          title: '❌ Webhook Processing Error',
+          title: 'Webhook Processing Error',
           data: [
             { label: 'Error', value: error.message },
             { label: 'Time', value: new Date().toISOString() }
@@ -2506,7 +3363,7 @@ app.post('/api/flutter-activity', (req, res) => {
     console.log('📱 Flutter activity received:', req.body);
     res.status(200).json({ success: true, message: 'Activity logged' });
   } catch (error) {
-    console.error('❌ Flutter activity error:', error);
+    console.error('Flutter activity error:', error);
     res.status(500).json({ error: 'Failed to log activity' });
   }
 });
@@ -2525,7 +3382,7 @@ app.post('/api/track-event', (req, res) => {
     // Here you could save to database, send to analytics, etc.
     res.status(200).json({ success: true, message: 'Event tracked successfully' });
   } catch (error) {
-    console.error('❌ Event tracking error:', error);
+    console.error('Event tracking error:', error);
     res.status(500).json({ error: 'Failed to track event' });
   }
 });
@@ -2598,7 +3455,7 @@ const ordersSnapshot = await db.collection('users')
         
         console.log(`✅ Found ${cancellableOrders.length} cancellable orders from Firestore`);
       } catch (firestoreError) {
-        console.error('❌ Firestore query failed:', firestoreError.message);
+        console.error('Firestore query failed:', firestoreError.message);
       }
     }
     
@@ -2609,7 +3466,7 @@ const ordersSnapshot = await db.collection('users')
     });
     
   } catch (error) {
-    console.error('❌ Error fetching cancellable orders:', error);
+    console.error('Error fetching cancellable orders:', error);
     return res.status(500).json({
       success: false,
       message: 'Internal server error'
@@ -2626,7 +3483,7 @@ app.post('/api/form-submit', async (req, res) => {
     const response = await processFormSubmission(form_name, form_data, visitor_info || {});
     res.status(200).json(response);
   } catch (error) {
-    console.error('❌ Form submission error:', error);
+    console.error('Form submission error:', error);
     res.status(500).json(createErrorResponse('Failed to process form submission'));
   }
 });
@@ -2845,12 +3702,91 @@ app.post('/salesiq/form-submit', async (req, res) => {
     });
     
   } catch (error) {
-    console.error('❌ SalesIQ form submission error:', error);
+    console.error('SalesIQ form submission error:', error);
     return res.status(500).json({
       success: false,
       message: 'Internal server error processing form submission',
       error: error.message
     });
+  }
+});
+
+// ✅ GET ORDER DETAILS (for SalesIQ Form Controller Detail Handler)
+app.get('/api/get-order', async (req, res) => {
+  try {
+    const { order_id, email } = req.query;
+    
+    if (!email || !order_id) {
+      return res.status(400).json({ error: 'Email and order_id are required' });
+    }
+    
+    console.log(`\n📥 Fetching order details for Form Controller`);
+    console.log(`  Order ID: ${order_id}`);
+    console.log(`  Email: ${email}`);
+    
+    const customerData = await getCustomerData(email);
+    if (!customerData) {
+      return res.status(404).json({ error: 'Customer not found' });
+    }
+    
+    // Case-insensitive order matching
+    const order = customerData.orders.find(o => o.id.toUpperCase() === order_id.toUpperCase());
+    
+    if (!order) {
+      console.log(`Order not found: ${order_id}`);
+      console.log(`📦 Available orders:`, customerData.orders.map(o => o.id));
+      return res.status(404).json({ error: 'Order not found' });
+    }
+    
+    console.log(`✅ Order found: ${order.id}`);
+    
+    // Return order details in format expected by SalesIQ Form Controller
+    res.json({
+      orderId: order.id,
+      productName: order.items?.[0]?.productName || 'Product',
+      amount: order.totalAmount,
+      paymentMethod: order.paymentMethod || 'N/A',
+      status: order.status,
+      orderDate: order.createdAt || new Date().toISOString(),
+      items: order.items || []
+    });
+  } catch (error) {
+    console.error('Get order error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ✅ GET ALL ORDERS (for SalesIQ Widget listing)
+app.get('/api/get-orders', async (req, res) => {
+  try {
+    const { email } = req.query;
+    
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+    
+    console.log(`\n📥 Fetching all orders for: ${email}`);
+    
+    const customerData = await getCustomerData(email);
+    if (!customerData) {
+      return res.status(404).json({ error: 'Customer not found' });
+    }
+    
+    // Return orders in format expected by SalesIQ Widget
+    const orders = customerData.orders.map(order => ({
+      id: order.id,
+      productName: order.items?.[0]?.productName || 'Product',
+      amount: order.totalAmount,
+      status: order.status,
+      date: order.createdAt || new Date().toISOString(),
+      paymentMethod: order.paymentMethod || 'N/A'
+    }));
+    
+    console.log(`✅ Found ${orders.length} orders`);
+    res.json(orders);
+  } catch (error) {
+    console.error('Get orders error:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -2886,7 +3822,7 @@ app.get('/api/forms/cancel-order/:orderId', async (req, res) => {
     
     res.json(createCancelOrderForm(order));
   } catch (error) {
-    console.error('❌ Cancel form error:', error);
+    console.error('Cancel form error:', error);
     res.status(500).json({ error: 'Failed to generate cancel form' });
   }
 });
@@ -2913,7 +3849,7 @@ app.get('/api/forms/return-order/:orderId', async (req, res) => {
     
     res.json(createReturnOrderForm(order));
   } catch (error) {
-    console.error('❌ Return form error:', error);
+    console.error('Return form error:', error);
     res.status(500).json({ error: 'Failed to generate return form' });
   }
 });
@@ -2956,7 +3892,7 @@ curl -X POST http://localhost:3000/webhook \
       "email": "arjunfree256@gmail.com"
     },
     "message": {
-      "text": "❌ Cancel Order"
+      "text": "Cancel Order"
     }
   }'
 

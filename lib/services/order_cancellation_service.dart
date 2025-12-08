@@ -13,7 +13,10 @@ import 'dart:convert';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 class OrderCancellationService {
-  static const String WEBHOOK_BASE_URL = 'https://nonchivalrous-paranoidly-cara.ngrok-free.dev';
+  // 🔧 UPDATE THIS URL based on your environment:
+  // - Local testing: 'http://localhost:3000'
+  // - Production: 'https://your-ngrok-url.ngrok-free.dev'
+  static const String WEBHOOK_BASE_URL = 'http://localhost:3000';
   static const String WEBHOOK_SECRET = 'your_shared_secret_here_change_in_production';
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   
