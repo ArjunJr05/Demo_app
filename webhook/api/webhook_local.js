@@ -17,7 +17,7 @@ const PORT = process.env.PORT || 3000;
 const BASE_URL = process.env.BASE_URL || 'https://nonchivalrous-paranoidly-cara.ngrok-free.dev';
 
 // 🤖 GEMINI AI Configuration
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || 'AIzaSyBs3wgg4lxw8mWMclg4iNXatcxlM3E_ex8';
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || 'AIzaSyAKdcXWPYPUPU_lsA-CGDPSVzi4kl3LEMQ';
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 
 const upload = multer({
@@ -172,10 +172,62 @@ async function analyzeImageWithHuggingFace(uploadedImagePath, productImageUrl) {
       model: 'gemini-2.5-flash'
     });
 
-    const prompt = `Compare these two product images and answer ONLY these questions:
+    const prompt = `You are a product verification expert. Compare these two product images to determine if they are the SAME product model.
 
-1. Is it the SAME product? Answer: YES or NO
-2. Is there any damage visible? Answer: YES or NO
+IMAGE 1: Customer's uploaded product image
+IMAGE 2: Original product reference image
+
+IMPORTANT: Ignore differences in photo angle, lighting, background, or image quality. Focus ONLY on the actual product features.
+
+PRODUCT MATCH ANALYSIS:
+
+1. SHAPE & FORM FACTOR:
+   - Is the overall shape the same? (e.g., both round, both oval, both rectangular)
+   - Are the proportions similar?
+   - IGNORE: Different angles or perspectives
+
+2. COLOR:
+   - Is the primary color the same?
+   - Example: Blue vs Blue = YES, Blue vs Black = NO, Blue vs Green = NO
+   - IGNORE: Slight shade differences due to lighting
+
+3. DESIGN ELEMENTS:
+   - Are the key design features the same? (logos, button placement, ports, patterns)
+   - Is the model/variant the same?
+   - IGNORE: Minor details that don't affect the model
+
+4. PRODUCT TYPE:
+   - Are they the same type of product? (e.g., both earbuds, both phones)
+   - Are they the same model/variant?
+
+ANSWER "YES" IF:
+- Same product type AND same model
+- Same shape/form factor
+- Same primary color
+- Same key design features
+
+ANSWER "NO" IF:
+- Different product variant (e.g., different color version, different model number)
+- Different shape or form factor
+- Different design features
+
+---
+
+DAMAGE DETECTION:
+
+Answer "YES" ONLY if you clearly see:
+- Broken or cracked parts
+- Large scratches (>1cm)
+- Missing pieces
+- Bent/deformed structure
+
+Answer "NO" for:
+- Minor scratches or wear
+- Dust, dirt, fingerprints
+- Lighting reflections
+- Normal usage marks
+
+---
 
 Respond in this EXACT JSON format (no markdown):
 {
@@ -1573,31 +1625,8 @@ async function sendCustomerWidget(visitorInfo) {
   if (visitorInfo.email && visitorInfo.email !== 'Not provided') {
     console.log('🎯 Showing comprehensive customer data widget with welcome message');
     
-    // Return both widget and welcome message with action buttons
-    return {
-      action: "reply",
-      replies: [{
-        text: `👋 Hi ${visitorInfo.name || 'there'}! Welcome to our support chat.\n\nHow can I help you today?`,
-        buttons: [
-          {
-            label: "🔄 Return Order",
-            name: "return_order",
-            type: "postback"
-          },
-          {
-            label: "❌ Cancel Order",
-            name: "cancel_order",
-            type: "postback"
-          },
-          {
-            label: "💬 Other Issue",
-            name: "other_issue",
-            type: "postback"
-          }
-        ]
-      }],
-      widget: createComprehensiveCustomerWidget(visitorInfo, customerData)
-    };
+    // Return widget directly - SalesIQ will display it properly
+    return createComprehensiveCustomerWidget(visitorInfo, customerData);
   }
 
   // All orders (sorted by date - newest first)
@@ -1767,61 +1796,75 @@ function createComprehensiveCustomerWidget(visitorInfo, customerData) {
     });
   }
   
-  // Issues Section (if any)
+  // Customer Issues Section (from Firestore issues collection) - Comprehensive Display
   if (customerData.issues && customerData.issues.length > 0) {
-    const openIssues = customerData.issues.filter(issue => issue.status === 'Open');
-    sections.push({
-      name: "issues",
-      layout: "listing",
-      title: `⚠️ Support Issues (${openIssues.length} open)`,
-      data: customerData.issues.slice(0, 3).map(issue => {
-        const issueItem = {
-          name: issue.id,
-          title: `${getIssueIcon(issue.status)} ${issue.issueType}`,
-          text: issue.description,
-          subtext: `${issue.status} • ${new Date(issue.createdAt).toLocaleDateString()}`
-        };
-        
-        // Add Cancel button if issue has an orderId (cancellation/return requests)
-        if (issue.orderId) {
-          issueItem.actions = [
-            {
-              label: "Cancel",
-              name: `CANCEL_ISSUE:${issue.id}:${issue.orderId}`,
-              type: "postback"
-            }
-          ];
-        }
-        
-        return issueItem;
-      })
-    });
-    
-    // 📸 IMAGE UPLOAD & VERIFICATION SECTION (Only show if there are support issues)
-    const firstOrderId = customerData.orders && customerData.orders.length > 0 ? customerData.orders[0].id : '';
-    sections.push({
-      name: "image_upload_verification",
-      layout: "info",
-      title: "📸 AI-Powered Product Verification",
-      data: [
-        { label: "🎯 Upload Method", value: "Click button for upload link" },
-        { label: "✅ AI Features", value: "Product match + Damage detection" },
-        { label: "📊 Results Display", value: "Shown in this widget panel" },
-        { label: "📁 Supported Files", value: "JPG, PNG, GIF, WebP (Max 10MB)" },
-        { label: "⚡ Processing", value: "Instant AI analysis with Gemini" }
-      ],
-      actions: [
-        {
-          label: "📤 Upload Product Image",
-          name: "OPEN_UPLOAD_FORM",
-          type: "postback"
-        },
-        {
-          label: "📋 View Instructions",
-          name: "TRIGGER_IMAGE_UPLOAD",
-          type: "postback"
-        }
-      ]
+    customerData.issues.forEach((issue, index) => {
+      const issueData = [
+        { label: "Issue ID", value: issue.id },
+        { label: "Status", value: issue.status || 'Pending Review' },
+        { label: "Description", value: issue.description || 'No description' },
+        { label: "Created", value: new Date(issue.createdAt).toLocaleDateString() }
+      ];
+      
+      // Add amount if available
+      if (issue.amount) {
+        issueData.splice(1, 0, { label: "Amount", value: `₹${issue.amount}` });
+      }
+      
+      // Add product name if available
+      if (issue.productName) {
+        issueData.splice(1, 0, { label: "Product", value: issue.productName });
+      }
+      
+      // Add verification results if available (for image verification issues)
+      if (issue.imageVerification) {
+        issueData.push({ 
+          label: "Product Match", 
+          value: issue.imageVerification.isMatch ? 'YES' : 'NO' 
+        });
+        issueData.push({ 
+          label: "Damage Detected", 
+          value: issue.imageVerification.damageDetected ? 'YES' : 'NO' 
+        });
+      }
+      
+      // Add damage accuracy if available (for return requests)
+      if (issue.damageAccuracy !== undefined) {
+        issueData.push({ 
+          label: "Damage Accuracy", 
+          value: `${issue.damageAccuracy}%` 
+        });
+      }
+      
+      // Add product accuracy if available
+      if (issue.productAccuracy !== undefined) {
+        issueData.push({ 
+          label: "Product Accuracy", 
+          value: `${issue.productAccuracy}%` 
+        });
+      }
+      
+      // Add resolution if available
+      if (issue.resolution) {
+        issueData.push({ 
+          label: "Resolution", 
+          value: issue.resolution 
+        });
+      }
+      
+      sections.push({
+        name: `issue_${index}`,
+        layout: "info",
+        title: `⚠️ ${issue.issueType || 'Customer Issue'}`,
+        data: issueData,
+        actions: issue.orderId ? [
+          {
+            label: "View Order Details",
+            name: `ORDER_DETAILS:${issue.orderId}`,
+            type: "postback"
+          }
+        ] : []
+      });
     });
   }
   
@@ -2514,6 +2557,141 @@ app.post('/webhook', async (req, res) => {
       });
     }
 
+    // ✅ HANDLE WIDGET DETAIL REQUEST
+    if (handler === "detail") {
+      console.log("✅ Widget detail handler - loading customer widget");
+      const customerData = await getCustomerData(visitorInfo.email);
+      const widgetResponse = createComprehensiveCustomerWidget(visitorInfo, customerData);
+      return res.status(200).json(widgetResponse);
+    }
+
+    // ✅ HANDLE BUTTON ACTIONS FROM WIDGET
+    if (handler === "action" && req.body.action) {
+      console.log('\n🔘 ===== BUTTON ACTION RECEIVED =====');
+      console.log('Action Object:', req.body.action);
+      console.log('Context:', req.body.context);
+      
+      // Extract action name from object
+      const actionObj = req.body.action;
+      const actionName = typeof actionObj === 'string' ? actionObj : actionObj.name;
+      
+      console.log('Action Name:', actionName);
+      console.log('Visitor Email:', visitorInfo.email);
+      
+      // Handle ORDER_DETAILS action
+      if (actionName && actionName.startsWith('ORDER_DETAILS:')) {
+        const orderId = actionName.split(':')[1];
+        console.log(`📋 Order details requested for: ${orderId}`);
+        
+        try {
+          const customerData = await getCustomerData(visitorInfo.email);
+          
+          // Find the order
+          let order = null;
+          if (customerData.deliveredOrders) {
+            order = customerData.deliveredOrders.find(o => o.id === orderId);
+          }
+          if (!order && customerData.orders) {
+            order = customerData.orders.find(o => o.id === orderId);
+          }
+          
+          if (!order) {
+            return res.status(200).json({
+              action: "reply",
+              replies: [{
+                text: `❌ Order ${orderId} not found.`
+              }],
+              suggestions: ["🏠 Back to Menu"]
+            });
+          }
+          
+          // Find related issue
+          console.log('🔍 Fetching issue details for order:', orderId);
+          const issue = customerData.issues?.find(i => i.orderId === orderId);
+          if (issue) {
+            console.log('✅ Found issue:', issue.id);
+          }
+          
+          // Create form with order details
+          const orderDetailsForm = {
+            type: "form",
+            name: "order",
+            title: `📋 Order Details - ${orderId}`,
+            hint: "Complete order and issue information",
+            button_label: "Pay",
+            inputs: [
+              {
+                type: "text",
+                name: "issue_id",
+                label: "Issue ID",
+                value: issue?.id || 'N/A',
+                readonly: true,
+                mandatory: false
+              },
+              {
+                type: "text",
+                name: "order_id",
+                label: "Order ID",
+                value: order.id,
+                readonly: true,
+                mandatory: false
+              },
+              {
+                type: "text",
+                name: "product_name",
+                label: "Product Name",
+                value: order.items?.[0]?.productName || 'N/A',
+                readonly: true,
+                mandatory: false
+              },
+              {
+                type: "text",
+                name: "amount",
+                label: "Amount",
+                value: `₹${order.totalAmount}`,
+                readonly: true,
+                mandatory: false
+              },
+              {
+                type: "text",
+                name: "issue_type",
+                label: "Issue Type",
+                value: issue?.issueType || 'N/A',
+                readonly: true,
+                mandatory: false
+              },
+              {
+                type: "text",
+                name: "status",
+                label: "Status",
+                value: issue?.status || order.status,
+                readonly: true,
+                mandatory: false
+              }
+            ],
+            action: {
+              type: "submit",
+              name: "close_order_details",
+              label: "Close"
+            }
+          };
+          
+          console.log('✅ Sending order details form to SalesIQ');
+          return res.status(200).json(orderDetailsForm);
+          
+        } catch (error) {
+          console.error('❌ Error fetching order details:', error);
+          return res.status(200).json({
+            action: "reply",
+            replies: [{
+              text: `❌ Error loading order details. Please try again.`
+            }],
+            suggestions: ["🏠 Back to Menu"]
+          });
+        }
+      }
+    }
+
     // ✅ HANDLE REAL USER MESSAGES (from bot or mobile app)
     if (req.body.handler === "message" || req.body.operation === "message") {
       console.log("\n" + "=".repeat(60));
@@ -2709,8 +2887,8 @@ app.post('/webhook', async (req, res) => {
                           `Order ID: ${issueData.orderId}\n` +
                           `Amount: ₹${issueData.amount}\n\n` +
                           `🔍 **Verification Results:**\n` +
-                          `Product Match: ${issueData.imageVerification.isMatch ? 'YES' : 'NO'} (${issueData.productAccuracy}%)\n` +
-                          `Damage Detected: ${issueData.imageVerification.damageDetected ? 'YES' : 'NO'} (${issueData.damageAccuracy}%)\n` +
+                          `Product Match: ${issueData.imageVerification.isMatch ? 'YES' : 'NO'}\n` +
+                          `Damage Detected: ${issueData.imageVerification.damageDetected ? 'YES' : 'NO'}\n` +
                           `Status: ${statusText}\n\n` +
                           `📋 **Return Request:**\n` +
                           `Issue ID: ${issueData.id}\n` +
@@ -4956,7 +5134,23 @@ app.post('/api/upload-verify-image', upload.single('image'), async (req, res) =>
     // Generate uploaded image URL (accessible via server)
     const uploadedImageUrl = `${BASE_URL}/uploads/${req.file.filename}`;
 
-    // 🎯 SAVE TO ISSUES TABLE IN FIRESTORE
+    // ❌ CHECK IF PRODUCT MATCHES - DON'T SAVE IF NO MATCH
+    if (!analysisResult.isMatch) {
+      console.log('❌ Product does not match - NOT saving to Firestore');
+      
+      // Return error response with try again message
+      return res.json({
+        success: false,
+        productMatch: 'NO',
+        damageDetected: analysisResult.damageDetected ? 'YES' : 'NO',
+        message: 'Product does not match. Please upload the correct product image.',
+        error: 'Product verification failed - image does not match the ordered product',
+        tryAgain: true,
+        autoClose: false
+      });
+    }
+
+    // ✅ PRODUCT MATCHES - SAVE TO ISSUES TABLE IN FIRESTORE
     try {
       // Get order details for the issue
       let order = null;
@@ -4982,7 +5176,7 @@ app.post('/api/upload-verify-image', upload.single('image'), async (req, res) =>
         productName: productName,
         amount: order?.totalAmount || 0,
         issueType: 'Order Return - Image Verification',
-        description: `Customer uploaded product image for return verification. Product match: ${analysisResult.isMatch ? 'YES' : 'NO'}, Damage: ${analysisResult.damageDetected ? 'YES' : 'NO'}`,
+        description: `Customer uploaded product image for return verification. Product match: YES, Damage: ${analysisResult.damageDetected ? 'YES' : 'NO'}`,
         status: 'Pending Review',
         returnReason: 'Image verification completed',
         productAccuracy: productAccuracy,
@@ -4994,11 +5188,9 @@ app.post('/api/upload-verify-image', upload.single('image'), async (req, res) =>
           damageDetected: analysisResult.damageDetected,
           confidence: analysisResult.confidence
         },
-        resolution: analysisResult.isMatch && !analysisResult.damageDetected
-          ? 'Image verified successfully. Awaiting agent approval.'
-          : analysisResult.isMatch && analysisResult.damageDetected
+        resolution: analysisResult.damageDetected
           ? 'Damage detected. Requires agent review.'
-          : 'Image does not match product. Requires agent review.',
+          : 'Image verified successfully. Awaiting agent approval.',
         returnReference: `RET_${orderId}_${Date.now()}`,
         paymentMethod: order?.paymentMethod || 'N/A',
         source: 'salesiq_image_verification',
@@ -5037,16 +5229,14 @@ app.post('/api/upload-verify-image', upload.single('image'), async (req, res) =>
       // Continue even if save fails
     }
 
-    // Return simple result to upload form with auto-close instruction
+    // Return success result to upload form with auto-close instruction
     res.json({
       success: true,
-      productMatch: analysisResult.isMatch ? 'YES' : 'NO',
+      productMatch: 'YES',
       damageDetected: analysisResult.damageDetected ? 'YES' : 'NO',
-      message: analysisResult.isMatch 
-        ? (analysisResult.damageDetected 
-          ? 'Product verified - Damage detected' 
-          : 'Product verified - No damage')
-        : 'Product does not match',
+      message: analysisResult.damageDetected 
+        ? 'Product verified - Damage detected' 
+        : 'Product verified - No damage',
       saved: true,
       autoClose: true
     });

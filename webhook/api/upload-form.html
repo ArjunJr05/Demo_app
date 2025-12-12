@@ -426,7 +426,12 @@
                         // User will manually return to chat
                     }
                 } else {
-                    displayError(result.error || 'Upload failed');
+                    // Handle product mismatch - show try again option
+                    if (result.tryAgain) {
+                        displayMismatchError(result.message);
+                    } else {
+                        displayError(result.error || 'Upload failed');
+                    }
                 }
             } catch (error) {
                 loading.style.display = 'none';
@@ -492,6 +497,25 @@
             
             // Optional: Auto-scroll to results
             resultContainer.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+
+        function displayMismatchError(errorMessage) {
+            resultContainer.style.display = 'block';
+            resultContainer.className = 'result-container error';
+            resultContainer.innerHTML = `
+                <div class="result-title">❌ Product Mismatch</div>
+                <div class="result-item" style="margin-bottom: 15px;">${errorMessage}</div>
+                <div style="margin-top: 20px; padding: 15px; background: #ffebee; border-radius: 8px; text-align: center;">
+                    <p style="margin: 10px 0; font-weight: bold; color: #d32f2f;">The uploaded image does not match the ordered product.</p>
+                    <p style="margin: 10px 0; font-size: 14px; color: #666;">Please upload the correct product image or return to chat to start a new return request.</p>
+                    <button onclick="location.reload()" style="margin: 10px 5px; padding: 12px 24px; background: #FF9800; color: white; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.2);">
+                        Try Again
+                    </button>
+                    <button onclick="window.close()" style="margin: 10px 5px; padding: 12px 24px; background: #2196F3; color: white; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.2);">
+                        Return to Chat
+                    </button>
+                </div>
+            `;
         }
 
         function displayError(errorMessage) {
