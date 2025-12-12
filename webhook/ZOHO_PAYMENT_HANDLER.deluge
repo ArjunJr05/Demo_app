@@ -1,0 +1,72 @@
+// ===================================================================
+// ZOHO SALESIQ FORM CONTROLLER - PAYMENT HANDLER
+// ===================================================================
+// This is your Zoho Deluge code for handling the "Pay" button click
+// Add this to your existing form submit handler in Zoho SalesIQ
+// ===================================================================
+
+info "=== PAYMENT FORM SUBMIT HANDLER ===";
+info form;
+
+// Get form action
+action = form.get("action");
+
+// User closed the form manually
+if("cancel".equals(action))
+{
+	return {"type":"banner","status":"success","text":"❌ Form closed"};
+}
+
+// Get submitted form details
+formName = form.get("name");
+values = form.get("values");
+response = Map();
+
+// Handle "order" form submission (Pay button clicked)
+if("order".equals(formName))
+{
+	// Extract order details from form
+	issueId = values.get("issue_id").get("value");
+	orderId = values.get("order_id").get("value");
+	productName = values.get("product_name").get("value");
+	amountStr = values.get("amount").get("value");
+	issueType = values.get("issue_type").get("value");
+	status = values.get("status").get("value");
+	
+	// Remove ₹ symbol and parse amount
+	amount = amountStr.replaceAll("₹","").trim();
+	
+	info "=== Payment Initiated ===";
+	info "Order ID: " + orderId;
+	info "Product: " + productName;
+	info "Amount: " + amount;
+	
+	// Create payment page URL with query parameters
+	baseUrl = "https://nonchivalrous-paranoidly-cara.ngrok-free.dev";
+	paymentUrl = baseUrl + "/payment.html?orderId=" + orderId + "&amount=" + amount + "&product=" + productName.replaceAll(" ","%20") + "&status=" + status;
+	
+	// Create payment link message
+	paymentMessage = "💳 **Payment Ready**\n\n";
+	paymentMessage = paymentMessage + "📦 Order ID: " + orderId + "\n";
+	paymentMessage = paymentMessage + "💰 Amount: ₹" + amount + "\n";
+	paymentMessage = paymentMessage + "🛍️ Product: " + productName + "\n\n";
+	paymentMessage = paymentMessage + "**How to Pay:**\n";
+	paymentMessage = paymentMessage + "1. Click the secure payment link below\n";
+	paymentMessage = paymentMessage + "2. Complete payment using UPI/Card/NetBanking/Wallet\n";
+	paymentMessage = paymentMessage + "3. You'll receive instant confirmation\n\n";
+	paymentMessage = paymentMessage + "🔐 Secure Payment Link:\n" + paymentUrl + "\n\n";
+	paymentMessage = paymentMessage + "✅ Powered by Razorpay - 100% Safe & Secure";
+	
+	banner = {"type":"banner","status":"success","text":"✅ Payment link generated! Click the link in chat to pay."};
+	
+	paymentData = {{"label":"Payment Link","value":paymentUrl}};
+	messageSection = {"name":"payment_link","layout":"info","title":"💳 Payment Details","data":paymentData};
+	
+	response.put("type", "sections_edit");
+	response.put("sections", {messageSection});
+	response.put("banner", banner);
+	
+	return response;
+}
+
+return response;

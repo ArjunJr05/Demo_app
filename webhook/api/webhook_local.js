@@ -12,6 +12,7 @@ const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const Razorpay = require('razorpay');
 const app = express();
 const PORT = process.env.PORT || 3000;
 const BASE_URL = process.env.BASE_URL || 'https://nonchivalrous-paranoidly-cara.ngrok-free.dev';
@@ -19,6 +20,14 @@ const BASE_URL = process.env.BASE_URL || 'https://nonchivalrous-paranoidly-cara.
 // 🤖 GEMINI AI Configuration
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || 'AIzaSyAKdcXWPYPUPU_lsA-CGDPSVzi4kl3LEMQ';
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+
+// 💳 RAZORPAY Configuration
+const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID || 'rzp_test_Rqgmk2mF6VDOKt';
+const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || 'Sd9mmAfN4RJTC99YY6dFFM3t';
+const razorpay = new Razorpay({
+  key_id: RAZORPAY_KEY_ID,
+  key_secret: RAZORPAY_KEY_SECRET
+});
 
 const upload = multer({
   storage: multer.diskStorage({
@@ -112,6 +121,7 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+app.use(express.static(path.join(__dirname, 'public')));
 
 // Serve upload form HTML
 app.get('/upload-form.html', (req, res) => {
@@ -2671,8 +2681,8 @@ app.post('/webhook', async (req, res) => {
             ],
             action: {
               type: "submit",
-              name: "close_order_details",
-              label: "Close"
+              name: "order",
+              label: "Pay"
             }
           };
           
@@ -4605,6 +4615,105 @@ const ordersSnapshot = await db.collection('users')
     return res.status(500).json({
       success: false,
       message: 'Internal server error'
+    });
+  }
+});
+
+// 💳 CREATE RAZORPAY ORDER
+app.post('/api/create-razorpay-order', async (req, res) => {
+  try {
+    console.log('\n💳 ===== CREATE RAZORPAY ORDER =====');
+    const { amount, orderId, currency = 'INR', receipt } = req.body;
+    
+    if (!amount || !orderId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Amount and Order ID are required'
+      });
+    }
+
+    const amountInPaise = Math.round(parseFloat(amount) * 100);
+    
+    const options = {
+      amount: amountInPaise,
+      currency: currency,
+      receipt: receipt || `order_${orderId}_${Date.now()}`,
+      notes: {
+        order_id: orderId,
+        source: 'salesiq_widget'
+      }
+    };
+
+    console.log('📋 Razorpay Order Options:', options);
+    
+    const razorpayOrder = await razorpay.orders.create(options);
+    
+    console.log('✅ Razorpay Order Created:', razorpayOrder.id);
+    
+    res.status(200).json({
+      success: true,
+      razorpay_order_id: razorpayOrder.id,
+      amount: razorpayOrder.amount,
+      currency: razorpayOrder.currency,
+      key_id: RAZORPAY_KEY_ID
+    });
+    
+  } catch (error) {
+    console.error('❌ Razorpay Order Creation Error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create Razorpay order',
+      error: error.message
+    });
+  }
+});
+
+// 💳 VERIFY RAZORPAY PAYMENT
+app.post('/api/verify-razorpay-payment', async (req, res) => {
+  try {
+    console.log('\n💳 ===== VERIFY RAZORPAY PAYMENT =====');
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature, order_id } = req.body;
+    
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing payment verification parameters'
+      });
+    }
+
+    const sign = razorpay_order_id + '|' + razorpay_payment_id;
+    const expectedSign = crypto
+      .createHmac('sha256', RAZORPAY_KEY_SECRET)
+      .update(sign.toString())
+      .digest('hex');
+
+    if (expectedSign === razorpay_signature) {
+      console.log('✅ Payment Signature Verified');
+      
+      if (order_id) {
+        console.log('📝 Updating order status in Firebase...');
+      }
+      
+      res.status(200).json({
+        success: true,
+        message: 'Payment verified successfully',
+        payment_id: razorpay_payment_id,
+        order_id: razorpay_order_id
+      });
+    } else {
+      console.log('❌ Payment Signature Verification Failed');
+      res.status(400).json({
+        success: false,
+        message: 'Payment verification failed'
+      });
+    }
+    
+  } catch (error) {
+    console.error('❌ Payment Verification Error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Payment verification error',
+      error: error.message
     });
   }
 });
