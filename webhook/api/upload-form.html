@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Product Image Verification</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-width: 600px;
+            width: 100%;
+            padding: 40px;
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 28px;
+            text-align: center;
+        }
+
+        .subtitle {
+            color: #666;
+            text-align: center;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+
+        .info-box {
+            background: #f8f9fa;
+            border-left: 4px solid #667eea;
+            padding: 15px;
+            margin-bottom: 25px;
+            border-radius: 5px;
+        }
+
+        .info-box p {
+            margin: 5px 0;
+            font-size: 14px;
+            color: #555;
+        }
+
+        .info-box strong {
+            color: #333;
+        }
+
+        .drop-zone {
+            border: 3px dashed #ccc;
+            border-radius: 15px;
+            padding: 60px 20px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            background: #fafafa;
+            margin-bottom: 20px;
+        }
+
+        .drop-zone.dragover {
+            border-color: #667eea;
+            background: #f0f4ff;
+            transform: scale(1.02);
+        }
+
+        .drop-zone.uploading {
+            border-color: #ffa500;
+            background: #fff8e1;
+        }
+
+        .drop-zone-icon {
+            font-size: 60px;
+            margin-bottom: 15px;
+        }
+
+        .drop-zone-text {
+            color: #666;
+            font-size: 16px;
+            margin-bottom: 10px;
+        }
+
+        .drop-zone-hint {
+            color: #999;
+            font-size: 13px;
+        }
+
+        #fileInput {
+            display: none;
+        }
+
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            border-radius: 10px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            width: 100%;
+            transition: transform 0.2s;
+            margin-top: 10px;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .preview-container {
+            margin: 20px 0;
+            display: none;
+        }
+
+        .preview-image {
+            width: 100%;
+            max-height: 300px;
+            object-fit: contain;
+            border-radius: 10px;
+            border: 2px solid #e0e0e0;
+        }
+
+        .result-container {
+            margin-top: 25px;
+            padding: 20px;
+            border-radius: 10px;
+            display: none;
+        }
+
+        .result-container.success {
+            background: #d4edda;
+            border: 2px solid #28a745;
+        }
+
+        .result-container.error {
+            background: #f8d7da;
+            border: 2px solid #dc3545;
+        }
+
+        .result-container.warning {
+            background: #fff3cd;
+            border: 2px solid #ffc107;
+        }
+
+        .result-title {
+            font-size: 20px;
+            font-weight: bold;
+            margin-bottom: 15px;
+        }
+
+        .result-item {
+            margin: 10px 0;
+            padding: 10px;
+            background: rgba(255, 255, 255, 0.7);
+            border-radius: 5px;
+        }
+
+        .result-item strong {
+            display: inline-block;
+            width: 150px;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 20px;
+            display: none;
+        }
+
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 15px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .comparison-images {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            margin-top: 15px;
+        }
+
+        .comparison-image {
+            text-align: center;
+        }
+
+        .comparison-image img {
+            width: 100%;
+            height: 200px;
+            object-fit: cover;
+            border-radius: 8px;
+            border: 2px solid #e0e0e0;
+        }
+
+        .comparison-image p {
+            margin-top: 8px;
+            font-size: 13px;
+            color: #666;
+            font-weight: 600;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📸 Product Verification</h1>
+        <p class="subtitle">Upload your product image for AI-powered verification</p>
+
+        <div class="info-box">
+            <p><strong>Email:</strong> <span id="customerEmail">Loading...</span></p>
+            <p><strong>Order ID:</strong> <span id="orderId">Auto-detect</span></p>
+            <p><strong>How it works:</strong> Upload → AI Analysis → Instant Results</p>
+        </div>
+
+        <button class="btn" id="cameraBtn" style="background: linear-gradient(135deg, #28a745 0%, #20c997 100%); margin-bottom: 15px;">
+            📸 Take Photo with Camera
+        </button>
+
+        <div class="drop-zone" id="dropZone">
+            <div class="drop-zone-icon">📤</div>
+            <div class="drop-zone-text">Drag & Drop your image here</div>
+            <div class="drop-zone-hint">or click to browse (JPG, PNG, GIF, WebP - Max 10MB)</div>
+        </div>
+
+        <input type="file" id="fileInput" accept="image/jpeg,image/jpg,image/png,image/gif,image/webp">
+        <input type="file" id="cameraInput" accept="image/*" capture="environment" style="display: none;">
+
+        <div class="preview-container" id="previewContainer">
+            <h3 style="margin-bottom: 10px; color: #333;">Preview:</h3>
+            <img id="previewImage" class="preview-image" alt="Preview">
+        </div>
+
+        <button class="btn" id="uploadBtn" disabled>Upload & Verify</button>
+
+        <div class="loading" id="loading">
+            <div class="spinner"></div>
+            <p>🤖 AI is analyzing your image...</p>
+            <p style="font-size: 13px; color: #666; margin-top: 5px;">This may take a few seconds</p>
+        </div>
+
+        <div class="result-container" id="resultContainer">
+            <div class="result-title" id="resultTitle"></div>
+            <div id="resultContent"></div>
+        </div>
+    </div>
+
+    <script>
+        // Get URL parameters
+        console.log('🔗 Full URL received:', window.location.href);
+        console.log('🔗 Search params:', window.location.search);
+        
+        const urlParams = new URLSearchParams(window.location.search);
+        
+        // Log all parameters
+        console.log('📋 All URL parameters:');
+        for (const [key, value] of urlParams.entries()) {
+            console.log(`  - ${key}: ${value}`);
+        }
+        
+        const email = urlParams.get('email') || 'arjunfree256@gmail.com';
+        const orderId = urlParams.get('orderId') || 'ORD1765202457052';
+        const productId = urlParams.get('productId') || '';
+        const imageUrl = urlParams.get('imageUrl') || '';
+
+        console.log('📧 Email (final):', email);
+        console.log('📦 Order ID (final):', orderId);
+        console.log('🆔 Product ID (final):', productId);
+        console.log('🖼️ Image URL (final):', imageUrl);
+
+        document.getElementById('customerEmail').textContent = email;
+        document.getElementById('orderId').textContent = orderId || 'Auto-detect';
+
+        const dropZone = document.getElementById('dropZone');
+        const fileInput = document.getElementById('fileInput');
+        const cameraInput = document.getElementById('cameraInput');
+        const cameraBtn = document.getElementById('cameraBtn');
+        const uploadBtn = document.getElementById('uploadBtn');
+        const previewContainer = document.getElementById('previewContainer');
+        const previewImage = document.getElementById('previewImage');
+        const loading = document.getElementById('loading');
+        const resultContainer = document.getElementById('resultContainer');
+
+        let selectedFile = null;
+
+        // Camera button - triggers camera on mobile
+        cameraBtn.addEventListener('click', () => cameraInput.click());
+
+        // Camera input change
+        cameraInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                handleFile(e.target.files[0]);
+            }
+        });
+
+        // Click to browse
+        dropZone.addEventListener('click', () => fileInput.click());
+
+        // Drag and drop handlers
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.classList.add('dragover');
+        });
+
+        dropZone.addEventListener('dragleave', () => {
+            dropZone.classList.remove('dragover');
+        });
+
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('dragover');
+            
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                handleFile(files[0]);
+            }
+        });
+
+        // File input change
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                handleFile(e.target.files[0]);
+            }
+        });
+
+        // Handle file selection
+        function handleFile(file) {
+            // Validate file type
+            const validTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
+            if (!validTypes.includes(file.type)) {
+                alert('Please upload a valid image file (JPG, PNG, GIF, WebP)');
+                return;
+            }
+
+            // Validate file size (10MB)
+            if (file.size > 10 * 1024 * 1024) {
+                alert('File size must be less than 10MB');
+                return;
+            }
+
+            selectedFile = file;
+
+            // Show preview
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                previewImage.src = e.target.result;
+                previewContainer.style.display = 'block';
+                uploadBtn.disabled = false;
+                dropZone.querySelector('.drop-zone-text').textContent = file.name;
+                dropZone.querySelector('.drop-zone-icon').textContent = '✅';
+            };
+            reader.readAsDataURL(file);
+        }
+
+        // Upload and verify
+        uploadBtn.addEventListener('click', async () => {
+            if (!selectedFile) return;
+
+            uploadBtn.disabled = true;
+            loading.style.display = 'block';
+            resultContainer.style.display = 'none';
+            dropZone.classList.add('uploading');
+
+            const formData = new FormData();
+            formData.append('image', selectedFile);
+            formData.append('email', email);
+            if (orderId) formData.append('orderId', orderId);
+            if (productId) formData.append('productId', productId);
+            if (imageUrl) formData.append('imageUrl', imageUrl);
+
+            console.log('📤 Sending to API:');
+            console.log('  - Email:', email);
+            console.log('  - Order ID:', orderId);
+            console.log('  - Product ID:', productId);
+            console.log('  - Image URL:', imageUrl);
+            console.log('  - File:', selectedFile.name);
+
+            try {
+                // Use current origin or fallback to ngrok URL
+                const apiUrl = window.location.origin + '/api/upload-verify-image';
+                console.log('🔗 API URL:', apiUrl);
+                
+                const response = await fetch(apiUrl, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const result = await response.json();
+
+                loading.style.display = 'none';
+                dropZone.classList.remove('uploading');
+
+                if (result.success) {
+                    displayResult(result);
+                    
+                    // Show "Return to Chat" button after verification
+                    if (result.autoClose) {
+                        // Don't auto-close, just show the button
+                        // User will manually return to chat
+                    }
+                } else {
+                    displayError(result.error || 'Upload failed');
+                }
+            } catch (error) {
+                loading.style.display = 'none';
+                dropZone.classList.remove('uploading');
+                displayError('Network error: ' + error.message);
+            }
+
+            uploadBtn.disabled = false;
+        });
+
+        function displayResult(result) {
+            const { productMatch, damageDetected, message } = result;
+
+            resultContainer.style.display = 'block';
+            
+            // Determine result type based on YES/NO
+            const isMatch = productMatch === 'YES';
+            const hasDamage = damageDetected === 'YES';
+            
+            if (isMatch && !hasDamage) {
+                resultContainer.className = 'result-container success';
+                resultContainer.innerHTML = `
+                    <div class="result-title">✅ Verification Complete!</div>
+                    <div class="result-item"><strong>Product Match:</strong> YES</div>
+                    <div class="result-item"><strong>Damage Detected:</strong> NO</div>
+                    <div style="margin-top: 20px; padding: 15px; background: #e8f5e9; border-radius: 8px; text-align: center;">
+                        <strong>✅ ${message}</strong><br>
+                        <p style="margin: 10px 0;">Your return request has been saved.</p>
+                        <button onclick="window.close()" style="margin-top: 15px; padding: 12px 30px; background: #4CAF50; color: white; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.2);">
+                            Return to Chat
+                        </button>
+                    </div>
+                `;
+            } else if (isMatch && hasDamage) {
+                resultContainer.className = 'result-container warning';
+                resultContainer.innerHTML = `
+                    <div class="result-title">⚠️ Damage Detected!</div>
+                    <div class="result-item"><strong>Product Match:</strong> YES</div>
+                    <div class="result-item"><strong>Damage Detected:</strong> YES</div>
+                    <div style="margin-top: 20px; padding: 15px; background: #fff3e0; border-radius: 8px; text-align: center;">
+                        <strong>⚠️ ${message}</strong><br>
+                        <p style="margin: 10px 0;">Your return request has been saved with damage report.</p>
+                        <button onclick="window.close()" style="margin-top: 15px; padding: 12px 30px; background: #FF9800; color: white; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.2);">
+                            Return to Chat
+                        </button>
+                    </div>
+                `;
+            } else {
+                resultContainer.className = 'result-container error';
+                resultContainer.innerHTML = `
+                    <div class="result-title">❌ Verification Failed</div>
+                    <div class="result-item"><strong>Product Match:</strong> NO</div>
+                    <div class="result-item"><strong>Damage Detected:</strong> ${damageDetected}</div>
+                    <div style="margin-top: 20px; padding: 15px; background: #ffebee; border-radius: 8px; text-align: center;">
+                        <strong>❌ ${message}</strong><br>
+                        <p style="margin: 10px 0;">Your return request has been saved for review.</p>
+                        <button onclick="window.close()" style="margin-top: 15px; padding: 12px 30px; background: #f44336; color: white; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.2);">
+                            Return to Chat
+                        </button>
+                    </div>
+                `;
+            }
+            
+            // Optional: Auto-scroll to results
+            resultContainer.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+
+        function displayError(errorMessage) {
+            resultContainer.style.display = 'block';
+            resultContainer.className = 'result-container error';
+            resultContainer.innerHTML = `
+                <div class="result-title">❌ Error</div>
+                <div class="result-item">${errorMessage}</div>
+            `;
+        }
+    </script>
+</body>
+</html>
