@@ -128,6 +128,11 @@ app.get('/upload-form.html', (req, res) => {
   res.sendFile(path.join(__dirname, 'upload-form.html'));
 });
 
+// Serve payment form HTML
+app.get('/payment.html', (req, res) => {
+  res.sendFile(path.join(__dirname, 'payment.html'));
+});
+
 // 🤖 GEMINI AI IMAGE ANALYSIS FUNCTIONS
 // =======================================
 
@@ -1806,77 +1811,45 @@ function createComprehensiveCustomerWidget(visitorInfo, customerData) {
     });
   }
   
-  // Customer Issues Section (from Firestore issues collection) - Comprehensive Display
+  // Customer Issues Section (from Firestore issues collection) - Individual Sections with Buttons
   if (customerData.issues && customerData.issues.length > 0) {
     customerData.issues.forEach((issue, index) => {
-      const issueData = [
-        { label: "Issue ID", value: issue.id },
-        { label: "Status", value: issue.status || 'Pending Review' },
-        { label: "Description", value: issue.description || 'No description' },
-        { label: "Created", value: new Date(issue.createdAt).toLocaleDateString() }
-      ];
+      // Determine status emoji
+      const statusEmoji = (issue.status === 'Paid' || issue.paymentStatus === 'completed') ? '✅' : '⚠️';
+      const statusText = issue.status || 'Pending Review';
       
-      // Add amount if available
-      if (issue.amount) {
-        issueData.splice(1, 0, { label: "Amount", value: `₹${issue.amount}` });
-      }
-      
-      // Add product name if available
-      if (issue.productName) {
-        issueData.splice(1, 0, { label: "Product", value: issue.productName });
-      }
-      
-      // Add verification results if available (for image verification issues)
-      if (issue.imageVerification) {
-        issueData.push({ 
-          label: "Product Match", 
-          value: issue.imageVerification.isMatch ? 'YES' : 'NO' 
-        });
-        issueData.push({ 
-          label: "Damage Detected", 
-          value: issue.imageVerification.damageDetected ? 'YES' : 'NO' 
-        });
-      }
-      
-      // Add damage accuracy if available (for return requests)
-      if (issue.damageAccuracy !== undefined) {
-        issueData.push({ 
-          label: "Damage Accuracy", 
-          value: `${issue.damageAccuracy}%` 
-        });
-      }
-      
-      // Add product accuracy if available
-      if (issue.productAccuracy !== undefined) {
-        issueData.push({ 
-          label: "Product Accuracy", 
-          value: `${issue.productAccuracy}%` 
-        });
-      }
-      
-      // Add resolution if available
-      if (issue.resolution) {
-        issueData.push({ 
-          label: "Resolution", 
-          value: issue.resolution 
-        });
-      }
-      
-      sections.push({
+      // Build issue card as listing with single item
+      const issueCard = {
         name: `issue_${index}`,
-        layout: "info",
-        title: `⚠️ ${issue.issueType || 'Customer Issue'}`,
-        data: issueData,
-        actions: issue.orderId ? [
-          {
-            label: "View Order Details",
-            name: `ORDER_DETAILS:${issue.orderId}`,
-            type: "postback"
-          }
-        ] : []
+        title: `${statusEmoji} ${issue.id || `Issue ${index + 1}`}`,
+        text: `${issue.productName || 'Product'} - ${statusText}`,
+        subtext: `Amount: ₹${issue.amount || 0} | Created: ${new Date(issue.createdAt).toLocaleDateString()}${issue.productAccuracy !== undefined ? ` | Match: ${issue.productAccuracy}%` : ''}`
+      };
+      
+      // Add payment URL as clickable link if available
+      if (issue.paymentUrl) {
+        issueCard.link = issue.paymentUrl;
+        issueCard.link_hint = "Click to pay";
+      }
+      
+      // Create individual section for each issue
+      sections.push({
+        name: `issue_section_${index}`,
+        layout: "listing",
+        title: index === 0 ? "⚠️ Order Return - Image Verification" : "",
+        data: [issueCard],
+        actions: issue.orderId ? [{
+          label: "View Details",
+          name: `ORDER_DETAILS:${issue.orderId}`,
+          type: "postback"
+        }] : []
       });
     });
+    
+    console.log(`✅ Added ${customerData.issues.length} individual issue sections with buttons`);
   }
+  
+  console.log(`📊 Total sections in widget: ${sections.length}`);
   
   return {
     type: "widget_detail",
@@ -2702,6 +2675,68 @@ app.post('/webhook', async (req, res) => {
       }
     }
 
+    // ✅ HANDLE FORM SUBMISSION (from form controller)
+    if (handler === "submit" && req.body.form) {
+      console.log('\n📋 ===== FORM SUBMISSION RECEIVED =====');
+      const formData = req.body.form;
+      const formName = formData.name;
+      const formValues = formData.values;
+      
+      console.log('Form Name:', formName);
+      console.log('Form Action:', formData.action);
+      
+      // Handle "order" form submission (payment form)
+      if (formName === 'order' && formData.action === 'submit') {
+        console.log('💳 Processing payment form submission...');
+        
+        const orderId = formValues.order_id?.value;
+        const productName = formValues.product_name?.value;
+        const amountStr = formValues.amount?.value;
+        const status = formValues.status?.value;
+        
+        // Extract numeric amount
+        const amount = amountStr ? amountStr.replace('₹', '').trim() : '0';
+        
+        console.log('Order ID:', orderId);
+        console.log('Product:', productName);
+        console.log('Amount:', amount);
+        
+        // Generate payment URL
+        const baseUrl = BASE_URL;
+        const paymentUrl = `${baseUrl}/payment.html?orderId=${orderId}&amount=${amount}&product=${encodeURIComponent(productName)}&status=${encodeURIComponent(status)}`;
+        
+        // Send payment message to chat
+        const paymentMessage = `💳 **Payment Ready**\n\n` +
+          `📦 Order ID: ${orderId}\n` +
+          `💰 Amount: ₹${amount}\n` +
+          `🛍️ Product: ${productName}\n\n` +
+          `**How to Pay:**\n` +
+          `1. Click the secure payment link below\n` +
+          `2. Complete payment using UPI/Card/NetBanking/Wallet\n` +
+          `3. You'll receive instant confirmation\n\n` +
+          `🔐 Secure Payment Link:\n${paymentUrl}\n\n` +
+          `✅ Powered by Razorpay - 100% Safe & Secure`;
+        
+        console.log('✅ Payment message generated');
+        
+        return res.status(200).json({
+          action: "reply",
+          replies: [{
+            text: paymentMessage
+          }],
+          suggestions: ["🏠 Back to Menu"]
+        });
+      }
+      
+      // Default response for other forms
+      return res.status(200).json({
+        action: "reply",
+        replies: [{
+          text: "Form submitted successfully!"
+        }]
+      });
+    }
+
     // ✅ HANDLE REAL USER MESSAGES (from bot or mobile app)
     if (req.body.handler === "message" || req.body.operation === "message") {
       console.log("\n" + "=".repeat(60));
@@ -3219,10 +3254,9 @@ app.post('/webhook', async (req, res) => {
             }],
             suggestions: [
               `RETURN_REASON:${orderId}:defective:Product defective`,
-              `RETURN_REASON:${orderId}:wrong_item:Wrong item received`,
               `RETURN_REASON:${orderId}:damaged:Product damaged`,
-              `RETURN_REASON:${orderId}:not_described:Not as described`,
               `RETURN_REASON:${orderId}:quality_issue:Quality issue`,
+              `RETURN_REASON:${orderId}:expired:Expired`,
               `RETURN_REASON:${orderId}:other:Other reason`,
               "🏠 Back to Menu"
             ]
@@ -3366,11 +3400,10 @@ app.post('/webhook', async (req, res) => {
       // ✅ HANDLE CLEAN REASON SELECTION: Direct text matching
       const reasonTextMap = {
         'product defective': 'defective',
-        'wrong item received': 'wrong_item',
         'product damaged': 'damaged',
-        'not as described': 'not_described',
         'quality issue': 'quality_issue',
-        'other reason': 'other'
+        'other reason': 'other',
+        'expired': 'expired'
       };
       
       const lowerMessage = messageText.toLowerCase();
@@ -3400,7 +3433,57 @@ app.post('/webhook', async (req, res) => {
         console.log('  Reason Code:', reasonCode);
         console.log('  Reason Display:', reasonDisplay);
         
-        // Generate upload link with order details
+        // ✅ CHECK IF REASON IS EXPIRED OR QUALITY ISSUE (YET TO BUILD)
+        if (reasonCode === 'expired' || reasonCode === 'quality_issue') {
+          console.log('⚠️ Reason - feature yet to build:', reasonCode);
+          
+          const response = {
+            action: "reply",
+            replies: [{
+              text: `⚠️ **Feature Yet to Build**\n\n` +
+                    `📦 Order: ${order.id}\n` +
+                    `📝 Reason: ${reasonDisplay}\n\n` +
+                    `This feature is yet to be built. Please check back later or contact support.`
+            }],
+            suggestions: [
+              "🏠 Back to Menu"
+            ]
+          };
+          
+          console.log('\n✅ Yet to build message created');
+          console.log('📤 Sending response:', JSON.stringify(response, null, 2));
+          
+          return res.status(200).json(response);
+        }
+        
+        // ✅ CHECK IF REASON REQUIRES HUMAN AGENT
+        const humanAgentReasons = ['other'];
+        
+        if (humanAgentReasons.includes(reasonCode)) {
+          console.log('⚠️ Reason requires human agent connection');
+          
+          const response = {
+            action: "reply",
+            replies: [{
+              text: `⚠️ **Oops!.. Let's connect with a human**\n\n` +
+                    `📦 Order: ${order.id}\n` +
+                    `📝 Reason: ${reasonDisplay}\n\n` +
+                    `This type of return requires assistance from our support team.\n\n` +
+                    `Press "Yes" below to connect with a human agent.`
+            }],
+            suggestions: [
+              "Yes",
+              "🏠 Back to Menu"
+            ]
+          };
+          
+          console.log('\n✅ Human agent connection message created');
+          console.log('📤 Sending response:', JSON.stringify(response, null, 2));
+          
+          return res.status(200).json(response);
+        }
+        
+        // Generate upload link with order details for automated reasons
         const productName = order.items?.[0]?.productName || order.items?.[0]?.name || 'Product';
         const productId = order.items?.[0]?.id || '';
         const imageUrl = order.items?.[0]?.image || '';
@@ -3456,7 +3539,57 @@ app.post('/webhook', async (req, res) => {
         console.log('  Reason Code:', reasonCode);
         console.log('  Reason Display:', reasonDisplay);
         
-        // Show refund method options directly (skip photo upload)
+        // ✅ CHECK IF REASON IS EXPIRED OR QUALITY ISSUE (YET TO BUILD)
+        if (reasonCode === 'expired' || reasonCode === 'quality_issue') {
+          console.log('⚠️ Reason - feature yet to build:', reasonCode);
+          
+          const response = {
+            action: "reply",
+            replies: [{
+              text: `⚠️ **Feature Yet to Build**\n\n` +
+                    `📦 Order: ${orderId}\n` +
+                    `📝 Reason: ${reasonDisplay}\n\n` +
+                    `This feature is yet to be built. Please check back later or contact support.`
+            }],
+            suggestions: [
+              "🏠 Back to Menu"
+            ]
+          };
+          
+          console.log('\n✅ Yet to build message created');
+          console.log('📤 Sending response:', JSON.stringify(response, null, 2));
+          
+          return res.status(200).json(response);
+        }
+        
+        // ✅ CHECK IF REASON REQUIRES HUMAN AGENT
+        const humanAgentReasons = ['other'];
+        
+        if (humanAgentReasons.includes(reasonCode)) {
+          console.log('⚠️ Reason requires human agent connection');
+          
+          const response = {
+            action: "reply",
+            replies: [{
+              text: `⚠️ **Oops!.. Let's connect with a human**\n\n` +
+                    `📦 Order: ${orderId}\n` +
+                    `📝 Reason: ${reasonDisplay}\n\n` +
+                    `This type of return requires assistance from our support team.\n\n` +
+                    `Press "Yes" below to connect with a human agent.`
+            }],
+            suggestions: [
+              "Yes",
+              "🏠 Back to Menu"
+            ]
+          };
+          
+          console.log('\n✅ Human agent connection message created');
+          console.log('📤 Sending response:', JSON.stringify(response, null, 2));
+          
+          return res.status(200).json(response);
+        }
+        
+        // Show refund method options for automated reasons (defective, damaged)
         const response = {
           action: "reply",
           replies: [{
@@ -3518,9 +3651,7 @@ app.post('/webhook', async (req, res) => {
           // Process the return
           const reasonDisplayMap = {
             'defective': 'Product defective',
-            'wrong_item': 'Wrong item received',
             'damaged': 'Product damaged',
-            'not_described': 'Not as described',
             'quality_issue': 'Quality issue',
             'other': 'Other reason'
           };
@@ -3618,9 +3749,7 @@ app.post('/webhook', async (req, res) => {
           // Get reason display name
           const reasonMap = {
             'defective': 'Product defective',
-            'wrong_item': 'Wrong item received',
             'damaged': 'Product damaged',
-            'not_described': 'Not as described',
             'quality_issue': 'Quality issue',
             'other': 'Other reason'
           };
@@ -3928,9 +4057,7 @@ app.post('/webhook', async (req, res) => {
               }],
               suggestions: [
                 "Product defective",
-                "Wrong item received",
                 "Product damaged",
-                "Not as described",
                 "Quality issue",
                 "Other reason",
                 "🏠 Back to Menu"
@@ -4690,8 +4817,55 @@ app.post('/api/verify-razorpay-payment', async (req, res) => {
     if (expectedSign === razorpay_signature) {
       console.log('✅ Payment Signature Verified');
       
-      if (order_id) {
-        console.log('📝 Updating order status in Firebase...');
+      // Update Firestore with payment status
+      if (order_id && firebaseEnabled) {
+        try {
+          console.log('📝 Updating order status in Firebase...');
+          console.log('Order ID:', order_id);
+          
+          // Find ALL issues associated with this order
+          const issuesSnapshot = await db.collection('issues')
+            .where('orderId', '==', order_id)
+            .get();
+          
+          if (!issuesSnapshot.empty) {
+            const updatePromises = [];
+            issuesSnapshot.forEach(issueDoc => {
+              updatePromises.push(
+                issueDoc.ref.update({
+                  status: 'Paid',
+                  paymentStatus: 'completed',
+                  paymentId: razorpay_payment_id,
+                  razorpayOrderId: razorpay_order_id,
+                  paidAt: admin.firestore.FieldValue.serverTimestamp(),
+                  updatedAt: admin.firestore.FieldValue.serverTimestamp()
+                })
+              );
+            });
+            
+            await Promise.all(updatePromises);
+            console.log(`✅ ${issuesSnapshot.size} issue(s) status updated to Paid in Firestore`);
+          } else {
+            console.log('⚠️ No issue found for order:', order_id);
+          }
+          
+          // Also update the order document if it exists
+          const orderRef = db.collection('orders').doc(order_id);
+          const orderDoc = await orderRef.get();
+          
+          if (orderDoc.exists) {
+            await orderRef.update({
+              paymentStatus: 'completed',
+              paymentId: razorpay_payment_id,
+              razorpayOrderId: razorpay_order_id,
+              paidAt: admin.firestore.FieldValue.serverTimestamp(),
+              updatedAt: admin.firestore.FieldValue.serverTimestamp()
+            });
+            console.log('✅ Order payment status updated in Firestore');
+          }
+        } catch (firestoreError) {
+          console.error('❌ Firestore update error:', firestoreError);
+        }
       }
       
       res.status(200).json({
@@ -4713,6 +4887,81 @@ app.post('/api/verify-razorpay-payment', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Payment verification error',
+      error: error.message
+    });
+  }
+});
+
+// Store payment URL in Firestore
+app.post('/api/store-payment-url', async (req, res) => {
+  try {
+    console.log('\n💾 ===== STORE PAYMENT URL =====');
+    const { order_id, payment_url, razorpay_order_id } = req.body;
+    
+    if (!order_id || !payment_url) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing order_id or payment_url'
+      });
+    }
+    
+    console.log('Order ID:', order_id);
+    console.log('Payment URL:', payment_url);
+    
+    if (firebaseEnabled) {
+      // Find and update ALL issues for this order (not just the first one)
+      const issuesSnapshot = await db.collection('issues')
+        .where('orderId', '==', order_id)
+        .get();
+      
+      if (!issuesSnapshot.empty) {
+        const updatePromises = [];
+        issuesSnapshot.forEach(issueDoc => {
+          updatePromises.push(
+            issueDoc.ref.update({
+              paymentUrl: payment_url,
+              razorpayOrderId: razorpay_order_id || null,
+              paymentUrlCreatedAt: admin.firestore.FieldValue.serverTimestamp(),
+              updatedAt: admin.firestore.FieldValue.serverTimestamp()
+            })
+          );
+        });
+        
+        await Promise.all(updatePromises);
+        console.log(`✅ Payment URL stored in ${issuesSnapshot.size} issue(s) for order:`, order_id);
+      } else {
+        console.log('⚠️ No issue found for order:', order_id);
+      }
+      
+      // Also update order document if exists
+      const orderRef = db.collection('orders').doc(order_id);
+      const orderDoc = await orderRef.get();
+      
+      if (orderDoc.exists) {
+        await orderRef.update({
+          paymentUrl: payment_url,
+          razorpayOrderId: razorpay_order_id || null,
+          paymentUrlCreatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+        console.log('✅ Payment URL stored in order:', order_id);
+      }
+      
+      res.status(200).json({
+        success: true,
+        message: 'Payment URL stored successfully'
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        message: 'Firebase not enabled'
+      });
+    }
+  } catch (error) {
+    console.error('❌ Store Payment URL Error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to store payment URL',
       error: error.message
     });
   }
@@ -5386,6 +5635,118 @@ function createImageUploadWidget(email, orderId = null) {
     ]
   };
 }
+
+// 🎯 GET ISSUE BY ORDER ID (for Deluge to fetch customer info)
+app.get('/api/get-issue-by-order', async (req, res) => {
+  try {
+    const orderId = req.query.orderId;
+    console.log('📋 Fetching issue for order:', orderId);
+    
+    if (!orderId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing orderId parameter'
+      });
+    }
+    
+    if (firebaseEnabled) {
+      const issuesSnapshot = await db.collection('issues')
+        .where('orderId', '==', orderId)
+        .limit(1)
+        .get();
+      
+      if (!issuesSnapshot.empty) {
+        const issueDoc = issuesSnapshot.docs[0];
+        const issueData = issueDoc.data();
+        
+        console.log('✅ Found issue:', issueDoc.id);
+        
+        return res.json({
+          success: true,
+          issue: {
+            id: issueDoc.id,
+            orderId: issueData.orderId,
+            customerEmail: issueData.customerEmail,
+            productName: issueData.productName,
+            amount: issueData.amount,
+            status: issueData.status,
+            issueType: issueData.issueType
+          }
+        });
+      } else {
+        return res.json({
+          success: false,
+          message: 'Issue not found'
+        });
+      }
+    } else {
+      return res.json({
+        success: false,
+        message: 'Firebase not enabled'
+      });
+    }
+  } catch (error) {
+    console.error('❌ Error fetching issue:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+});
+
+// 🎯 GET CUSTOMER PROFILE BY EMAIL (for Deluge to fetch customer name)
+app.get('/api/get-customer-profile', async (req, res) => {
+  try {
+    const email = req.query.email;
+    console.log('👤 Fetching customer profile for:', email);
+    
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing email parameter'
+      });
+    }
+    
+    if (firebaseEnabled) {
+      const usersSnapshot = await db.collection('users')
+        .where('email', '==', email)
+        .limit(1)
+        .get();
+      
+      if (!usersSnapshot.empty) {
+        const userDoc = usersSnapshot.docs[0];
+        const userData = userDoc.data();
+        
+        console.log('✅ Found customer profile:', userData.name);
+        
+        return res.json({
+          success: true,
+          profile: {
+            name: userData.name || 'Customer',
+            email: userData.email,
+            phone: userData.phone || ''
+          }
+        });
+      } else {
+        return res.json({
+          success: false,
+          message: 'Customer profile not found'
+        });
+      }
+    } else {
+      return res.json({
+        success: false,
+        message: 'Firebase not enabled'
+      });
+    }
+  } catch (error) {
+    console.error('❌ Error fetching customer profile:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+});
 
 // 🎯 GET VERIFICATION STATUS (for Flutter app to poll)
 app.get('/api/verification-status/:email', (req, res) => {
