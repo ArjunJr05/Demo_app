@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Expiry Date Verification</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-width: 600px;
+            width: 100%;
+            padding: 40px;
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 28px;
+            text-align: center;
+        }
+
+        .subtitle {
+            color: #666;
+            text-align: center;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+
+        .info-box {
+            background: #fff3e0;
+            border-left: 4px solid #ff9800;
+            padding: 15px;
+            margin-bottom: 25px;
+            border-radius: 5px;
+        }
+
+        .info-box p {
+            margin: 5px 0;
+            font-size: 14px;
+            color: #555;
+        }
+
+        .info-box strong {
+            color: #333;
+        }
+
+        .drop-zone {
+            border: 3px dashed #ccc;
+            border-radius: 15px;
+            padding: 60px 20px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            background: #fafafa;
+            margin-bottom: 20px;
+        }
+
+        .drop-zone.dragover {
+            border-color: #ff9800;
+            background: #fff8e1;
+            transform: scale(1.02);
+        }
+
+        .drop-zone.uploading {
+            border-color: #ffa500;
+            background: #fff8e1;
+        }
+
+        .drop-zone-icon {
+            font-size: 60px;
+            margin-bottom: 15px;
+        }
+
+        .drop-zone-text {
+            color: #666;
+            font-size: 16px;
+            margin-bottom: 10px;
+        }
+
+        .drop-zone-hint {
+            color: #999;
+            font-size: 13px;
+        }
+
+        #fileInput {
+            display: none;
+        }
+
+        .btn {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            border-radius: 10px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            width: 100%;
+            transition: transform 0.2s;
+            margin-top: 10px;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(245, 87, 108, 0.4);
+        }
+
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .preview-container {
+            margin: 20px 0;
+            display: none;
+        }
+
+        .preview-image {
+            width: 100%;
+            max-height: 300px;
+            object-fit: contain;
+            border-radius: 10px;
+            border: 2px solid #e0e0e0;
+        }
+
+        .result-container {
+            margin-top: 25px;
+            padding: 20px;
+            border-radius: 10px;
+            display: none;
+        }
+
+        .result-container.success {
+            background: #d4edda;
+            border: 2px solid #28a745;
+        }
+
+        .result-container.error {
+            background: #f8d7da;
+            border: 2px solid #dc3545;
+        }
+
+        .result-container.warning {
+            background: #fff3cd;
+            border: 2px solid #ffc107;
+        }
+
+        .result-title {
+            font-size: 20px;
+            font-weight: bold;
+            margin-bottom: 15px;
+        }
+
+        .result-item {
+            margin: 10px 0;
+            padding: 10px;
+            background: rgba(255, 255, 255, 0.7);
+            border-radius: 5px;
+        }
+
+        .result-item strong {
+            display: inline-block;
+            width: 150px;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 20px;
+            display: none;
+        }
+
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #ff9800;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 15px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📅 Expiry Date Verification</h1>
+        <p class="subtitle">Upload product image showing expiry date for OCR verification</p>
+
+        <div class="info-box">
+            <p><strong>📧 Email:</strong> <span id="customerEmail">Loading...</span></p>
+            <p><strong>📦 Order ID:</strong> <span id="orderId">Auto-detect</span></p>
+            <p><strong>🤖 How it works:</strong> Upload → AI OCR → Date Extraction → Verification</p>
+            <p style="margin-top: 10px; color: #ff6f00;"><strong>⚠️ Important:</strong> Ensure expiry date is clearly visible in the image</p>
+        </div>
+
+        <button class="btn" id="cameraBtn" style="background: linear-gradient(135deg, #28a745 0%, #20c997 100%);">
+            📸 Take Photo with Camera
+        </button>
+
+        <input type="file" id="cameraInput" accept="image/*" capture="environment" style="display: none;">
+
+        <div class="preview-container" id="previewContainer">
+            <h3 style="margin-bottom: 10px; color: #333;">Preview:</h3>
+            <img id="previewImage" class="preview-image" alt="Preview">
+        </div>
+
+        <button class="btn" id="uploadBtn" disabled>Verify Expiry Date</button>
+
+        <div class="loading" id="loading">
+            <div class="spinner"></div>
+            <p>🤖 AI is extracting expiry date from image...</p>
+            <p style="font-size: 13px; color: #666; margin-top: 5px;">This may take a few seconds</p>
+        </div>
+
+        <div class="result-container" id="resultContainer">
+            <div class="result-title" id="resultTitle"></div>
+            <div id="resultContent"></div>
+        </div>
+    </div>
+
+    <script>
+        console.log('🔗 Full URL:', window.location.href);
+        console.log('🔗 Search params:', window.location.search);
+        
+        const urlParams = new URLSearchParams(window.location.search);
+        
+        // Log all URL parameters before decoding
+        console.log('📋 Raw URL parameters:');
+        for (const [key, value] of urlParams.entries()) {
+            console.log(`  ${key}: ${value}`);
+        }
+        
+        const email = decodeURIComponent(urlParams.get('email') || 'arjunfree256@gmail.com');
+        const orderId = decodeURIComponent(urlParams.get('orderId') || 'ORD1765202457052');
+        const productId = decodeURIComponent(urlParams.get('productId') || '');
+        const imageUrl = decodeURIComponent(urlParams.get('imageUrl') || '');
+
+        console.log('📧 Decoded Email:', email);
+        console.log('📦 Decoded Order ID:', orderId);
+        console.log('🆔 Decoded Product ID:', productId);
+        console.log('🖼️ Decoded Image URL:', imageUrl);
+
+        document.getElementById('customerEmail').textContent = email;
+        document.getElementById('orderId').textContent = orderId || 'Auto-detect';
+
+        const cameraInput = document.getElementById('cameraInput');
+        const cameraBtn = document.getElementById('cameraBtn');
+        const uploadBtn = document.getElementById('uploadBtn');
+        const previewContainer = document.getElementById('previewContainer');
+        const previewImage = document.getElementById('previewImage');
+        const loading = document.getElementById('loading');
+        const resultContainer = document.getElementById('resultContainer');
+
+        let selectedFile = null;
+
+        cameraBtn.addEventListener('click', () => cameraInput.click());
+
+        cameraInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                handleFile(e.target.files[0]);
+            }
+        });
+
+        function handleFile(file) {
+            const validTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
+            if (!validTypes.includes(file.type)) {
+                alert('Please upload a valid image file (JPG, PNG, GIF, WebP)');
+                return;
+            }
+
+            if (file.size > 10 * 1024 * 1024) {
+                alert('File size must be less than 10MB');
+                return;
+            }
+
+            selectedFile = file;
+
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                previewImage.src = e.target.result;
+                previewContainer.style.display = 'block';
+                uploadBtn.disabled = false;
+            };
+            reader.readAsDataURL(file);
+        }
+
+        uploadBtn.addEventListener('click', async () => {
+            if (!selectedFile) return;
+
+            uploadBtn.disabled = true;
+            loading.style.display = 'block';
+            resultContainer.style.display = 'none';
+
+            const formData = new FormData();
+            formData.append('image', selectedFile);
+            formData.append('email', email);
+            formData.append('orderId', orderId || '');
+            formData.append('productId', productId || '');
+            formData.append('imageUrl', imageUrl || '');
+
+            console.log('📤 Sending to expiry verification API');
+            console.log('  Email:', email);
+            console.log('  Order ID:', orderId);
+            console.log('  Product ID:', productId);
+            console.log('  Image URL:', imageUrl);
+
+            try {
+                const apiUrl = window.location.origin + '/api/upload-verify-expiry';
+                console.log('🔗 API URL:', apiUrl);
+                
+                const response = await fetch(apiUrl, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const result = await response.json();
+
+                loading.style.display = 'none';
+
+                if (result.success) {
+                    if (result.isExpired) {
+                        displayExpiredResult(result);
+                    } else {
+                        displayNotExpiredResult(result);
+                    }
+                } else {
+                    displayError(result.error || 'Upload failed');
+                }
+            } catch (error) {
+                loading.style.display = 'none';
+                displayError('Network error: ' + error.message);
+            }
+
+            uploadBtn.disabled = false;
+        });
+
+        function displayExpiredResult(result) {
+            resultContainer.style.display = 'block';
+            resultContainer.className = 'result-container success';
+            resultContainer.innerHTML = `
+                <div class="result-title">✅ Product Expired - Return Accepted!</div>
+                <div class="result-item"><strong>Expiry Date:</strong> ${result.expiryDate}</div>
+                <div class="result-item"><strong>Current Date:</strong> ${result.currentDate}</div>
+                <div class="result-item"><strong>Status:</strong> EXPIRED</div>
+                <div style="margin-top: 20px; padding: 15px; background: #e8f5e9; border-radius: 8px; text-align: center;">
+                    <strong>✅ ${result.message}</strong><br>
+                    <p style="margin: 10px 0;">Your return request has been accepted. The product has expired.</p>
+                    <button onclick="window.close()" style="margin-top: 15px; padding: 12px 30px; background: #4CAF50; color: white; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.2);">
+                        Return to Chat
+                    </button>
+                </div>
+            `;
+        }
+
+        function displayNotExpiredResult(result) {
+            resultContainer.style.display = 'block';
+            resultContainer.className = 'result-container warning';
+            resultContainer.innerHTML = `
+                <div class="result-title">⚠️ Product Not Expired</div>
+                <div class="result-item"><strong>Expiry Date:</strong> ${result.expiryDate}</div>
+                <div class="result-item"><strong>Current Date:</strong> ${result.currentDate}</div>
+                <div class="result-item"><strong>Status:</strong> NOT EXPIRED</div>
+                <div style="margin-top: 20px; padding: 15px; background: #fff3e0; border-radius: 8px; text-align: center;">
+                    <strong>⚠️ ${result.message}</strong><br>
+                    <p style="margin: 10px 0;">The product is not expired yet. Please contact admin for more support.</p>
+                    <button onclick="window.close()" style="margin-top: 15px; padding: 12px 30px; background: #FF9800; color: white; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.2);">
+                        Return to Chat
+                    </button>
+                </div>
+            `;
+        }
+
+        function displayError(errorMessage) {
+            resultContainer.style.display = 'block';
+            resultContainer.className = 'result-container error';
+            resultContainer.innerHTML = `
+                <div class="result-title">❌ Error</div>
+                <div class="result-item">${errorMessage}</div>
+                <button onclick="location.reload()" style="margin-top: 15px; padding: 12px 24px; background: #FF9800; color: white; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.2);">
+                    Try Again
+                </button>
+            `;
+        }
+    </script>
+</body>
+</html>
