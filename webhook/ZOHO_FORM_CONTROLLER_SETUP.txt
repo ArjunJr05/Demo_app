@@ -1,0 +1,154 @@
+===============================================================
+ZOHO SALESIQ FORM CONTROLLER SETUP INSTRUCTIONS
+===============================================================
+
+ERROR: "Form Controller pay_order is not found"
+
+This means you need to configure the form controller in Zoho SalesIQ.
+
+===============================================================
+STEP-BY-STEP SETUP IN ZOHO SALESIQ DASHBOARD:
+===============================================================
+
+1. LOGIN TO ZOHO SALESIQ
+   - Go to https://salesiq.zoho.com
+   - Login to your account
+
+2. NAVIGATE TO FORM CONTROLLERS
+   - Click on "Settings" (gear icon)
+   - Go to "Developers" section
+   - Click on "Form Controllers"
+
+3. CREATE NEW FORM CONTROLLER (if not exists)
+   - Click "+ Add Form Controller"
+   - Give it a name: "Payment Form Controller" (or any name)
+   - Set the webhook URL to your ngrok URL
+
+4. ADD FORM SUBMIT HANDLER
+   - In the Form Controller, find "Form Submit Handler"
+   - Click "Add Handler" or "Edit"
+   - Paste the code from ZOHO_PAYMENT_HANDLER.deluge
+
+5. CONFIGURE THE HANDLER
+   - Handler Name: pay_order
+   - Handler Type: Form Submit
+   - Form Name: order
+   - Paste the Deluge code
+
+===============================================================
+COMPLETE ZOHO DELUGE CODE FOR FORM SUBMIT HANDLER:
+===============================================================
+
+Handler Name: pay_order
+Form Name: order
+
+CODE:
+-------------------------------------------------------------------
+info "=== PAYMENT FORM SUBMIT HANDLER ===";
+info form;
+
+action = form.get("action");
+
+if("cancel".equals(action))
+{
+	return {"type":"banner","status":"success","text":"❌ Form closed"};
+}
+
+formName = form.get("name");
+values = form.get("values");
+response = Map();
+
+if("order".equals(formName))
+{
+	issueId = values.get("issue_id").get("value");
+	orderId = values.get("order_id").get("value");
+	productName = values.get("product_name").get("value");
+	amountStr = values.get("amount").get("value");
+	issueType = values.get("issue_type").get("value");
+	status = values.get("status").get("value");
+	
+	amount = amountStr.replaceAll("₹","").trim();
+	
+	info "=== Payment Initiated ===";
+	info "Order ID: " + orderId;
+	info "Product: " + productName;
+	info "Amount: " + amount;
+	
+	baseUrl = "https://nonchivalrous-paranoidly-cara.ngrok-free.dev";
+	paymentUrl = baseUrl + "/payment.html?orderId=" + orderId + "&amount=" + amount + "&product=" + productName.replaceAll(" ","%20") + "&status=" + status;
+	
+	paymentMessage = "💳 **Payment Ready**\n\n";
+	paymentMessage = paymentMessage + "📦 Order ID: " + orderId + "\n";
+	paymentMessage = paymentMessage + "💰 Amount: ₹" + amount + "\n";
+	paymentMessage = paymentMessage + "🛍️ Product: " + productName + "\n\n";
+	paymentMessage = paymentMessage + "**How to Pay:**\n";
+	paymentMessage = paymentMessage + "1. Click the secure payment link below\n";
+	paymentMessage = paymentMessage + "2. Complete payment using UPI/Card/NetBanking/Wallet\n";
+	paymentMessage = paymentMessage + "3. You'll receive instant confirmation\n\n";
+	paymentMessage = paymentMessage + "🔐 Secure Payment Link:\n" + paymentUrl + "\n\n";
+	paymentMessage = paymentMessage + "✅ Powered by Razorpay - 100% Safe & Secure";
+	
+	banner = {"type":"banner","status":"success","text":"✅ Payment link generated! Click the link in chat to pay."};
+	
+	paymentData = {{"label":"Payment Link","value":paymentUrl}};
+	messageSection = {"name":"payment_link","layout":"info","title":"💳 Payment Details","data":paymentData};
+	
+	response.put("type", "sections_edit");
+	response.put("sections", {messageSection});
+	response.put("banner", banner);
+	
+	return response;
+}
+
+return response;
+-------------------------------------------------------------------
+
+===============================================================
+ALTERNATIVE: USE EXISTING FORM CONTROLLER
+===============================================================
+
+If you already have a form controller set up, you need to:
+
+1. Find your existing form submit handler
+2. Add the payment handling code to it
+3. Make sure it handles the form name "order"
+
+The handler should check:
+- if formName equals "order"
+- Then execute the payment logic
+
+===============================================================
+VERIFICATION CHECKLIST:
+===============================================================
+
+✓ Form controller created in Zoho SalesIQ
+✓ Form submit handler added
+✓ Handler configured for form name: "order"
+✓ Deluge code pasted correctly
+✓ Webhook URL points to your ngrok URL
+✓ Form controller is enabled/active
+
+===============================================================
+TESTING:
+===============================================================
+
+After setup:
+1. Restart your webhook server (node webhook_local.js)
+2. Open SalesIQ widget
+3. Click order details button
+4. Form should appear with "Pay" button
+5. Click "Pay" button
+6. Payment link should appear in chat
+
+===============================================================
+TROUBLESHOOTING:
+===============================================================
+
+If still getting error:
+- Check Zoho SalesIQ logs for form controller errors
+- Verify form name is exactly "order" (case-sensitive)
+- Verify action name is exactly "pay_order"
+- Check webhook URL is accessible
+- Ensure form controller is published/enabled
+
+===============================================================

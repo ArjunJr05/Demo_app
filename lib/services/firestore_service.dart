@@ -362,9 +362,9 @@ class FirestoreService {
     }
   }
 
-  // ==================== ORDERS COLLECTION ====================
+  // ==================== ORDERS SUBCOLLECTION (under users) ====================
 
-  /// Create a new order
+  /// Create a new order (stored as subcollection under user)
   static Future<String> createOrder({
     required String customerId,
     required String customerName,
@@ -409,8 +409,15 @@ class FirestoreService {
         'createdAt': FieldValue.serverTimestamp(),
       };
 
-      await _firestore.collection('orders').doc(orderId).set(orderData);
-      print('✅ Order created: $orderId');
+      // ✅ NEW: Store order as subcollection under user
+      await _firestore
+          .collection('users')
+          .doc(customerId)
+          .collection('orders')
+          .doc(orderId)
+          .set(orderData);
+      
+      print('✅ Order created as subcollection: users/$customerId/orders/$orderId');
       
       return orderId;
     } catch (e) {
@@ -419,12 +426,14 @@ class FirestoreService {
     }
   }
 
-  /// Get all orders for a customer
+  /// Get all orders for a customer (from subcollection)
   static Future<List<app_order.Order>> getCustomerOrders(String customerId) async {
     try {
+      // ✅ NEW: Fetch from users/{customerId}/orders subcollection
       QuerySnapshot snapshot = await _firestore
+          .collection('users')
+          .doc(customerId)
           .collection('orders')
-          .where('customerId', isEqualTo: customerId)
           .orderBy('orderDate', descending: true)
           .get();
 
@@ -442,7 +451,7 @@ class FirestoreService {
         return app_order.Order.fromJson(data);
       }).toList();
 
-      print('✅ Fetched ${orders.length} orders for customer: $customerId');
+      print('✅ Fetched ${orders.length} orders from users/$customerId/orders');
       return orders;
     } catch (e) {
       print('❌ Error fetching customer orders: $e');
@@ -450,10 +459,17 @@ class FirestoreService {
     }
   }
 
-  /// Get a single order by ID
-  static Future<app_order.Order?> getOrder(String orderId) async {
+  /// Get a single order by ID (requires customerId to locate in subcollection)
+  static Future<app_order.Order?> getOrder(String customerId, String orderId) async {
     try {
-      DocumentSnapshot doc = await _firestore.collection('orders').doc(orderId).get();
+      // ✅ NEW: Fetch from users/{customerId}/orders/{orderId}
+      DocumentSnapshot doc = await _firestore
+          .collection('users')
+          .doc(customerId)
+          .collection('orders')
+          .doc(orderId)
+          .get();
+      
       if (doc.exists) {
         Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
         
@@ -474,8 +490,9 @@ class FirestoreService {
     }
   }
 
-  /// Update order status
+  /// Update order status (requires customerId to locate in subcollection)
   static Future<void> updateOrderStatus({
+    required String customerId,
     required String orderId,
     required app_order.OrderStatus status,
     String? trackingNumber,
@@ -495,25 +512,40 @@ class FirestoreService {
         'Status updated to ${status.toString()} at ${DateTime.now().toString()}'
       ]);
 
-      await _firestore.collection('orders').doc(orderId).update(updates);
-      print('✅ Order status updated: $orderId -> $status');
+      // ✅ NEW: Update in users/{customerId}/orders/{orderId}
+      await _firestore
+          .collection('users')
+          .doc(customerId)
+          .collection('orders')
+          .doc(orderId)
+          .update(updates);
+      
+      print('✅ Order status updated: users/$customerId/orders/$orderId -> $status');
     } catch (e) {
       print('❌ Error updating order status: $e');
       throw 'Failed to update order status';
     }
   }
 
-  /// Update payment status
+  /// Update payment status (requires customerId to locate in subcollection)
   static Future<void> updatePaymentStatus({
+    required String customerId,
     required String orderId,
     required app_order.PaymentStatus paymentStatus,
   }) async {
     try {
-      await _firestore.collection('orders').doc(orderId).update({
+      // ✅ NEW: Update in users/{customerId}/orders/{orderId}
+      await _firestore
+          .collection('users')
+          .doc(customerId)
+          .collection('orders')
+          .doc(orderId)
+          .update({
         'paymentStatus': paymentStatus.toString(),
         'updatedAt': FieldValue.serverTimestamp(),
       });
-      print('✅ Payment status updated: $orderId -> $paymentStatus');
+      
+      print('✅ Payment status updated: users/$customerId/orders/$orderId -> $paymentStatus');
     } catch (e) {
       print('❌ Error updating payment status: $e');
       throw 'Failed to update payment status';

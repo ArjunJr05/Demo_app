@@ -1,0 +1,165 @@
+===============================================================
+RAZORPAY PAYMENT INTEGRATION - COMPLETE SETUP GUIDE
+===============================================================
+
+✅ WHAT HAS BEEN IMPLEMENTED:
+
+1. BACKEND (webhook_local.js):
+   - Razorpay SDK installed and configured
+   - API endpoint: POST /api/create-razorpay-order
+   - API endpoint: POST /api/verify-razorpay-payment
+   - Static file serving for payment page
+   - Test credentials configured:
+     * Key ID: rzp_test_Rqgmk2mF6VDOKt
+     * Key Secret: Sd9mmAfN4RJTC99YY6dFFM3t
+
+2. PAYMENT PAGE (payment.html):
+   - Beautiful, responsive payment UI
+   - Razorpay Checkout integration
+   - Automatic payment verification
+   - Success/Error handling
+
+3. FORM UPDATED:
+   - Button changed from "Close" to "Pay"
+   - Action name: "pay_order"
+
+===============================================================
+HOW TO USE:
+===============================================================
+
+STEP 1: UPDATE YOUR ZOHO SALESIQ FORM CONTROLLER
+-------------------------------------------------
+Copy the code from ZOHO_PAYMENT_HANDLER.deluge and replace your
+existing form submit handler for the "order" form.
+
+The handler will:
+- Extract order details from the form
+- Generate a payment URL
+- Send the payment link to the customer in chat
+
+STEP 2: TEST THE PAYMENT FLOW
+------------------------------
+1. User clicks "Cancel Order" in SalesIQ widget
+2. User selects an order to view
+3. Order details form appears with "Pay" button
+4. User clicks "Pay" button
+5. Payment link is sent in chat
+6. User clicks the payment link
+7. Razorpay checkout opens
+8. User completes payment
+9. Payment is verified automatically
+
+===============================================================
+PAYMENT FLOW DIAGRAM:
+===============================================================
+
+User clicks "Pay" button
+         ↓
+Zoho Form Submit Handler triggered
+         ↓
+Generate payment URL with order details
+         ↓
+Send payment link in chat message
+         ↓
+User clicks payment link
+         ↓
+Payment page opens (payment.html)
+         ↓
+Page calls /api/create-razorpay-order
+         ↓
+Razorpay order created
+         ↓
+Razorpay Checkout modal opens
+         ↓
+User completes payment
+         ↓
+Payment verified via /api/verify-razorpay-payment
+         ↓
+Success message displayed
+
+===============================================================
+API ENDPOINTS:
+===============================================================
+
+1. CREATE RAZORPAY ORDER
+   URL: POST /api/create-razorpay-order
+   Body: {
+     "amount": "1500",
+     "orderId": "ORD123",
+     "currency": "INR"
+   }
+   Response: {
+     "success": true,
+     "razorpay_order_id": "order_xxx",
+     "amount": 150000,
+     "currency": "INR",
+     "key_id": "rzp_test_xxx"
+   }
+
+2. VERIFY PAYMENT
+   URL: POST /api/verify-razorpay-payment
+   Body: {
+     "razorpay_order_id": "order_xxx",
+     "razorpay_payment_id": "pay_xxx",
+     "razorpay_signature": "signature_xxx",
+     "order_id": "ORD123"
+   }
+   Response: {
+     "success": true,
+     "message": "Payment verified successfully",
+     "payment_id": "pay_xxx",
+     "order_id": "order_xxx"
+   }
+
+===============================================================
+PAYMENT PAGE URL FORMAT:
+===============================================================
+
+https://your-domain.com/payment.html?orderId=ORD123&amount=1500&product=Product%20Name&status=Pending
+
+Parameters:
+- orderId: Your order ID
+- amount: Amount in rupees (not paise)
+- product: Product name (URL encoded)
+- status: Order status
+
+===============================================================
+TESTING WITH RAZORPAY TEST MODE:
+===============================================================
+
+Test Cards:
+- Card Number: 4111 1111 1111 1111
+- CVV: Any 3 digits
+- Expiry: Any future date
+
+Test UPI:
+- UPI ID: success@razorpay
+
+Test Wallets:
+- All test wallets will succeed automatically
+
+===============================================================
+IMPORTANT NOTES:
+===============================================================
+
+1. The payment page is served from /payment.html
+2. All payments are in TEST mode with test credentials
+3. Replace test credentials with LIVE credentials for production
+4. Update the baseUrl in ZOHO_PAYMENT_HANDLER.deluge with your actual domain
+5. Payment verification uses HMAC SHA256 signature validation
+6. All amounts are handled in paise (multiply by 100) for Razorpay
+
+===============================================================
+NEXT STEPS FOR PRODUCTION:
+===============================================================
+
+1. Get LIVE Razorpay credentials from dashboard
+2. Update environment variables:
+   - RAZORPAY_KEY_ID=your_live_key
+   - RAZORPAY_KEY_SECRET=your_live_secret
+3. Update baseUrl in Zoho handler to production domain
+4. Test thoroughly with small amounts
+5. Add webhook for payment status updates (optional)
+6. Implement order status update in Firebase after payment
+
+===============================================================

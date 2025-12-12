@@ -7,7 +7,7 @@ import '../models/product.dart';
 import '../models/order.dart';
 
 class ECommerceService {
-  static const String _webhookUrl = 'http://localhost:3000';
+  static const String _webhookUrl = 'https://nonchivalrous-paranoidly-cara.ngrok-free.dev';
   
   // 🛍️ PRODUCT CATALOG
   static List<Product> get sampleProducts => [
