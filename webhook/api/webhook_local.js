@@ -3255,7 +3255,7 @@ app.post('/webhook', async (req, res) => {
             suggestions: [
               `RETURN_REASON:${orderId}:defective:Product defective`,
               `RETURN_REASON:${orderId}:damaged:Product damaged`,
-              `RETURN_REASON:${orderId}:quality_issue:Quality issue`,
+              `RETURN_REASON:${orderId}:expired:Expired`,
               `RETURN_REASON:${orderId}:expired:Expired`,
               `RETURN_REASON:${orderId}:other:Other reason`,
               "🏠 Back to Menu"
@@ -3401,7 +3401,7 @@ app.post('/webhook', async (req, res) => {
       const reasonTextMap = {
         'product defective': 'defective',
         'product damaged': 'damaged',
-        'quality issue': 'quality_issue',
+        'Expired': 'expired',
         'other reason': 'other',
         'expired': 'expired'
       };
@@ -3433,8 +3433,8 @@ app.post('/webhook', async (req, res) => {
         console.log('  Reason Code:', reasonCode);
         console.log('  Reason Display:', reasonDisplay);
         
-        // ✅ CHECK IF REASON IS EXPIRED OR QUALITY ISSUE (YET TO BUILD)
-        if (reasonCode === 'expired' || reasonCode === 'quality_issue') {
+        // ✅ CHECK IF REASON IS EXPIRED OR Expired (YET TO BUILD)
+        if (reasonCode === 'expired' || reasonCode === 'expired') {
           console.log('⚠️ Reason - feature yet to build:', reasonCode);
           
           const response = {
@@ -3539,8 +3539,8 @@ app.post('/webhook', async (req, res) => {
         console.log('  Reason Code:', reasonCode);
         console.log('  Reason Display:', reasonDisplay);
         
-        // ✅ CHECK IF REASON IS EXPIRED OR QUALITY ISSUE (YET TO BUILD)
-        if (reasonCode === 'expired' || reasonCode === 'quality_issue') {
+        // ✅ CHECK IF REASON IS EXPIRED OR Expired (YET TO BUILD)
+        if (reasonCode === 'expired' || reasonCode === 'expired') {
           console.log('⚠️ Reason - feature yet to build:', reasonCode);
           
           const response = {
@@ -3652,7 +3652,7 @@ app.post('/webhook', async (req, res) => {
           const reasonDisplayMap = {
             'defective': 'Product defective',
             'damaged': 'Product damaged',
-            'quality_issue': 'Quality issue',
+            'expired': 'Expired',
             'other': 'Other reason'
           };
           const reasonDisplayName = reasonDisplayMap[reasonCode] || reasonCode;
@@ -3750,7 +3750,7 @@ app.post('/webhook', async (req, res) => {
           const reasonMap = {
             'defective': 'Product defective',
             'damaged': 'Product damaged',
-            'quality_issue': 'Quality issue',
+            'expired': 'Expired',
             'other': 'Other reason'
           };
           const reasonDisplayName = reasonMap[reasonCode] || reasonCode;
@@ -4058,7 +4058,7 @@ app.post('/webhook', async (req, res) => {
               suggestions: [
                 "Product defective",
                 "Product damaged",
-                "Quality issue",
+                "Expired",
                 "Other reason",
                 "🏠 Back to Menu"
               ]
