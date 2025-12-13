@@ -1305,6 +1305,16 @@ async function getCustomerData(customerEmail) {
         
         console.log(`🎫 Found ${issues.length} issues`);
         
+        // Step 7: Calculate fraud detection score
+        const fraudDetection = calculateFraudScore({
+          orders,
+          deliveredOrders,
+          issues,
+          analytics
+        });
+        
+        console.log(`🚨 Fraud Score: ${fraudDetection.fraudScore}/100 - ${fraudDetection.riskLevel}`);
+        
         return {
           userId: userId,
           customerName: customerProfile.name || 'Customer',
@@ -1316,7 +1326,8 @@ async function getCustomerData(customerEmail) {
           cartItems,
           favorites,
           issues,
-          analytics
+          analytics,
+          fraudDetection
         };
         
       } catch (firestoreError) {
@@ -1393,7 +1404,224 @@ function calculateComprehensiveAnalytics(orders, cartItems, favorites, customerP
   };
 }
 
-// � MOCK CUSTOMER DATA (Fallback)
+// 🚨 FRAUD DETECTION SYSTEM
+/**
+ * Calculate fraud risk score based on customer behavior patterns
+ * @param {Object} customerData - Complete customer data including orders, issues, etc.
+ * @returns {Object} Fraud detection result with score, risk level, and flags
+ */
+function calculateFraudScore(customerData) {
+  const { orders = [], deliveredOrders = [], issues = [], analytics = {} } = customerData;
+  
+  // Initialize fraud indicators
+  const fraudIndicators = {
+    cancelRate: 0,
+    returnRate: 0,
+    issueRate: 0,
+    highValueCancellations: 0,
+    rapidOrderPattern: 0,
+    addressChanges: 0,
+    paymentFailures: 0,
+    suspiciousTimePattern: 0
+  };
+  
+  const totalOrders = orders.length + deliveredOrders.length;
+  
+  if (totalOrders === 0) {
+    return {
+      fraudScore: 0,
+      riskLevel: 'Unknown',
+      riskColor: 'grey',
+      indicators: fraudIndicators,
+      flags: ['New customer - insufficient data']
+    };
+  }
+  
+  // 1. Calculate cancellation rate
+  const canceledOrders = orders.filter(o => 
+    o.status === 'Cancelled' || 
+    o.status === 'OrderStatus.cancelled' ||
+    o.status === 'canceled'
+  );
+  fraudIndicators.cancelRate = (canceledOrders.length / totalOrders) * 100;
+  
+  // 2. Calculate return rate from issues
+  const returnIssues = issues.filter(i => 
+    i.issueType === 'Order Return' || 
+    i.issueType === 'Return' ||
+    i.issueType === 'return'
+  );
+  fraudIndicators.returnRate = (returnIssues.length / totalOrders) * 100;
+  
+  // 3. Calculate overall issue rate
+  fraudIndicators.issueRate = (issues.length / totalOrders) * 100;
+  
+  // 4. Check for high-value cancellations (orders > ₹5000)
+  fraudIndicators.highValueCancellations = canceledOrders.filter(o => 
+    o.totalAmount > 5000
+  ).length;
+  
+  // 5. Detect rapid order pattern (multiple orders in short time)
+  if (orders.length >= 3) {
+    const sortedOrders = [...orders].sort((a, b) => 
+      new Date(b.orderDate) - new Date(a.orderDate)
+    );
+    
+    // Check if 3+ orders placed within 24 hours
+    const recentOrders = sortedOrders.slice(0, 3);
+    const timeSpan = new Date(recentOrders[0].orderDate) - new Date(recentOrders[2].orderDate);
+    const hoursSpan = timeSpan / (1000 * 60 * 60);
+    
+    if (hoursSpan < 24) {
+      fraudIndicators.rapidOrderPattern = 1;
+    }
+  }
+  
+  // 6. Check for address inconsistencies
+  const uniqueAddresses = new Set();
+  [...orders, ...deliveredOrders].forEach(o => {
+    if (o.shippingAddress) {
+      uniqueAddresses.add(JSON.stringify(o.shippingAddress));
+    }
+  });
+  
+  if (uniqueAddresses.size > 3 && totalOrders < 10) {
+    fraudIndicators.addressChanges = uniqueAddresses.size;
+  }
+  
+  // 7. Check payment failures
+  const paymentFailures = orders.filter(o => 
+    o.paymentStatus === 'failed' || 
+    o.paymentStatus === 'PaymentStatus.failed'
+  );
+  fraudIndicators.paymentFailures = paymentFailures.length;
+  
+  // 8. Check for suspicious time patterns (many orders late night 12am-5am)
+  const lateNightOrders = [...orders, ...deliveredOrders].filter(o => {
+    const hour = new Date(o.orderDate).getHours();
+    return hour >= 0 && hour < 5;
+  });
+  
+  if (lateNightOrders.length > totalOrders * 0.5) {
+    fraudIndicators.suspiciousTimePattern = 1;
+  }
+  
+  // Calculate weighted fraud score (0-100)
+  let fraudScore = 0;
+  const flags = [];
+  
+  // Weight: Cancel rate (max 25 points)
+  if (fraudIndicators.cancelRate > 50) {
+    fraudScore += 25;
+    flags.push(`High cancellation rate: ${fraudIndicators.cancelRate.toFixed(1)}%`);
+  } else if (fraudIndicators.cancelRate > 30) {
+    fraudScore += 15;
+    flags.push(`Elevated cancellation rate: ${fraudIndicators.cancelRate.toFixed(1)}%`);
+  } else if (fraudIndicators.cancelRate > 15) {
+    fraudScore += 8;
+  }
+  
+  // Weight: Return rate (max 20 points)
+  if (fraudIndicators.returnRate > 40) {
+    fraudScore += 20;
+    flags.push(`High return rate: ${fraudIndicators.returnRate.toFixed(1)}%`);
+  } else if (fraudIndicators.returnRate > 25) {
+    fraudScore += 12;
+    flags.push(`Elevated return rate: ${fraudIndicators.returnRate.toFixed(1)}%`);
+  } else if (fraudIndicators.returnRate > 10) {
+    fraudScore += 6;
+  }
+  
+  // Weight: Issue rate (max 15 points)
+  if (fraudIndicators.issueRate > 50) {
+    fraudScore += 15;
+    flags.push(`High issue rate: ${fraudIndicators.issueRate.toFixed(1)}%`);
+  } else if (fraudIndicators.issueRate > 30) {
+    fraudScore += 10;
+  } else if (fraudIndicators.issueRate > 15) {
+    fraudScore += 5;
+  }
+  
+  // Weight: High-value cancellations (max 15 points)
+  if (fraudIndicators.highValueCancellations >= 3) {
+    fraudScore += 15;
+    flags.push(`${fraudIndicators.highValueCancellations} high-value cancellations`);
+  } else if (fraudIndicators.highValueCancellations >= 2) {
+    fraudScore += 10;
+  } else if (fraudIndicators.highValueCancellations >= 1) {
+    fraudScore += 5;
+  }
+  
+  // Weight: Rapid order pattern (max 10 points)
+  if (fraudIndicators.rapidOrderPattern) {
+    fraudScore += 10;
+    flags.push('Rapid order placement detected');
+  }
+  
+  // Weight: Address changes (max 10 points)
+  if (fraudIndicators.addressChanges > 5) {
+    fraudScore += 10;
+    flags.push(`Multiple addresses: ${fraudIndicators.addressChanges}`);
+  } else if (fraudIndicators.addressChanges > 3) {
+    fraudScore += 6;
+  }
+  
+  // Weight: Payment failures (max 5 points)
+  if (fraudIndicators.paymentFailures > 3) {
+    fraudScore += 5;
+    flags.push(`${fraudIndicators.paymentFailures} payment failures`);
+  } else if (fraudIndicators.paymentFailures > 1) {
+    fraudScore += 3;
+  }
+  
+  // Weight: Suspicious time pattern (max 5 points)
+  if (fraudIndicators.suspiciousTimePattern) {
+    fraudScore += 5;
+    flags.push('Unusual ordering time pattern');
+  }
+  
+  // Determine risk level and color
+  let riskLevel, riskColor;
+  if (fraudScore >= 70) {
+    riskLevel = 'Critical';
+    riskColor = 'red';
+  } else if (fraudScore >= 50) {
+    riskLevel = 'High';
+    riskColor = 'orange';
+  } else if (fraudScore >= 30) {
+    riskLevel = 'Medium';
+    riskColor = 'yellow';
+  } else if (fraudScore >= 15) {
+    riskLevel = 'Low';
+    riskColor = 'green';
+  } else {
+    riskLevel = 'Minimal';
+    riskColor = 'green';
+  }
+  
+  // Add positive indicators if low risk
+  if (fraudScore < 30 && totalOrders >= 5) {
+    flags.push('Good order history');
+  }
+  
+  if (flags.length === 0) {
+    flags.push('No fraud indicators detected');
+  }
+  
+  return {
+    fraudScore: Math.round(fraudScore),
+    riskLevel,
+    riskColor,
+    indicators: fraudIndicators,
+    flags,
+    totalOrders,
+    canceledCount: canceledOrders.length,
+    returnCount: returnIssues.length,
+    issueCount: issues.length
+  };
+}
+
+// 📊 MOCK CUSTOMER DATA (Fallback)
 function getMockCustomerData(customerEmail) {
   const mockCustomerData = {
     'priya2@gmail.com': {
@@ -1909,20 +2137,92 @@ async function sendCustomerWidget(visitorInfo) {
 function createComprehensiveCustomerWidget(visitorInfo, customerData) {
   const sections = [];
   
+  // Calculate counts
+  const ordersCount = customerData.orders?.length || 0;
+  const deliveredCount = customerData.deliveredOrders?.length || 0;
+  const issuesCount = customerData.issues?.length || 0;
+  
+  // 🚨 FRAUD RISK ALERT - Display at top if score >= 30
+  const fraud = customerData.fraudDetection || {};
+  if (fraud.fraudScore >= 30) {
+    sections.push({
+      name: "fraud_alert",
+      layout: "info",
+      title: "🚨 FRAUD RISK ALERT",
+      data: [
+        { label: "RISK SCORE", value: `${fraud.fraudScore}/100` },
+        { label: "RISK LEVEL", value: fraud.riskLevel.toUpperCase() },
+        { label: "Cancel Rate", value: `${fraud.indicators?.cancelRate?.toFixed(1) || 0}%` },
+        { label: "Return Rate", value: `${fraud.indicators?.returnRate?.toFixed(1) || 0}%` },
+        { label: "Issue Rate", value: `${fraud.indicators?.issueRate?.toFixed(1) || 0}%` },
+        { label: "⚠️ Flags", value: fraud.flags?.join(' | ') || 'None' }
+      ]
+    });
+  } else if (fraud.fraudScore > 0) {
+    // Show minimal fraud info for low risk
+    sections.push({
+      name: "fraud_status",
+      layout: "info",
+      title: "✅ Fraud Risk Status",
+      data: [
+        { label: "Risk Score", value: `${fraud.fraudScore}/100 - ${fraud.riskLevel}` },
+        { label: "Status", value: fraud.flags?.[0] || 'No fraud indicators detected' }
+      ]
+    });
+  }
+  
   // Customer Overview Section
   sections.push({
     name: "customer_overview",
     layout: "info",
-    title: `👋 Hello ${customerData.customerName || visitorInfo.name}!`,
+    title: "User Info",
     data: [
       { label: "Customer", value: customerData.customerName || visitorInfo.name },
       { label: "Email", value: customerData.customerEmail },
-      { label: "Phone", value: customerData.customerPhone || 'Not provided' },
       { label: "Member Since", value: customerData.analytics?.customerSince || 'Recently' },
-      { label: "Loyalty Status", value: `${customerData.analytics?.loyaltyStatus || 'New'} Member` }
+      { label: "Orders", value: ordersCount.toString() },
+      { label: "Delivered", value: deliveredCount.toString() },
+      { label: "Issues", value: issuesCount.toString() }
     ]
-    // Removed global Return/Cancel buttons - they now appear only on individual pending orders
   });
+  
+  // Customer Issues Section (from Firestore issues collection) - Individual Sections with Buttons
+  if (customerData.issues && customerData.issues.length > 0) {
+    customerData.issues.forEach((issue, index) => {
+      // Determine status emoji
+      const statusEmoji = (issue.status === 'Paid' || issue.paymentStatus === 'completed') ? '✅' : '⚠️';
+      const statusText = issue.status || 'Pending Review';
+      
+      // Build issue card as listing with single item
+      const issueCard = {
+        name: `issue_${index}`,
+        title: `${statusEmoji} ${issue.id || `Issue ${index + 1}`}`,
+        text: `${issue.productName || 'Product'} - ${statusText}`,
+        subtext: `Amount: ₹${issue.amount || 0} | Created: ${new Date(issue.createdAt).toLocaleDateString()}${issue.productAccuracy !== undefined ? ` | Match: ${issue.productAccuracy}%` : ''}`
+      };
+      
+      // Add payment URL as clickable link if available
+      if (issue.paymentUrl) {
+        issueCard.link = issue.paymentUrl;
+        issueCard.link_hint = "Click to pay";
+      }
+      
+      // Create individual section for each issue
+      sections.push({
+        name: `issue_section_${index}`,
+        layout: "listing",
+        title: index === 0 ? "Order Return" : "",
+        data: [issueCard],
+        actions: issue.orderId ? [{
+          label: "View Details",
+          name: `ORDER_DETAILS:${issue.orderId}`,
+          type: "postback"
+        }] : []
+      });
+    });
+    
+    console.log(`✅ Added ${customerData.issues.length} individual issue sections with buttons`);
+  }
   
   // Orders Summary Section
   if (customerData.orders && customerData.orders.length > 0) {
@@ -1930,18 +2230,21 @@ function createComprehensiveCustomerWidget(visitorInfo, customerData) {
     sections.push({
       name: "orders_summary",
       layout: "listing",
-      title: `📦 Recent Orders (${customerData.orders.length} total)`,
+      title: `Recent Orders (${customerData.orders.length} total)`,
       data: recentOrders.map(order => {
         // Check if order is pending/cancellable
         const isPending = order.status === 'OrderStatus.pending' || 
                          order.status === 'Pending' || 
                          order.status === 'Processing';
         
+        // Get product name from order items
+        const productName = order.items?.[0]?.productName || order.items?.[0]?.name || 'Product';
+        
         const orderItem = {
           name: order.id,
-          title: `${getOrderStatusWithIcon(order.status)} Order ${order.id}`,
+          title: `${productName} - ${order.id}`,
           text: `₹${order.totalAmount} • ${new Date(order.orderDate).toLocaleDateString()}`,
-          subtext: `${order.paymentStatus} • ${order.trackingNumber || 'No tracking'}`
+          subtext: `${order.shipping_status || 'Processing'} • ${order.trackingNumber || 'No tracking'}`
         };
         
         // Add cancel button only for pending orders
@@ -1979,56 +2282,18 @@ function createComprehensiveCustomerWidget(visitorInfo, customerData) {
   // Analytics Section
   if (customerData.analytics) {
     const analytics = customerData.analytics;
+    
     sections.push({
       name: "analytics",
       layout: "info",
-      title: "📊 Customer Analytics",
+      title: "Customer Analytics",
       data: [
         { label: "Total Orders", value: analytics.totalOrders?.toString() || '0' },
         { label: "Total Spent", value: `₹${analytics.totalSpent || 0}` },
         { label: "Average Order", value: `₹${analytics.avgOrderValue || 0}` },
-        { label: "Cart Value", value: `₹${analytics.cartValue || 0}` },
-        { label: "Favorite Category", value: analytics.favoriteCategory || 'None' }
+        { label: "Cart Value", value: `₹${analytics.cartValue || 0}` }
       ]
     });
-  }
-  
-  // Customer Issues Section (from Firestore issues collection) - Individual Sections with Buttons
-  if (customerData.issues && customerData.issues.length > 0) {
-    customerData.issues.forEach((issue, index) => {
-      // Determine status emoji
-      const statusEmoji = (issue.status === 'Paid' || issue.paymentStatus === 'completed') ? '✅' : '⚠️';
-      const statusText = issue.status || 'Pending Review';
-      
-      // Build issue card as listing with single item
-      const issueCard = {
-        name: `issue_${index}`,
-        title: `${statusEmoji} ${issue.id || `Issue ${index + 1}`}`,
-        text: `${issue.productName || 'Product'} - ${statusText}`,
-        subtext: `Amount: ₹${issue.amount || 0} | Created: ${new Date(issue.createdAt).toLocaleDateString()}${issue.productAccuracy !== undefined ? ` | Match: ${issue.productAccuracy}%` : ''}`
-      };
-      
-      // Add payment URL as clickable link if available
-      if (issue.paymentUrl) {
-        issueCard.link = issue.paymentUrl;
-        issueCard.link_hint = "Click to pay";
-      }
-      
-      // Create individual section for each issue
-      sections.push({
-        name: `issue_section_${index}`,
-        layout: "listing",
-        title: index === 0 ? "⚠️ Order Return - Image Verification" : "",
-        data: [issueCard],
-        actions: issue.orderId ? [{
-          label: "View Details",
-          name: `ORDER_DETAILS:${issue.orderId}`,
-          type: "postback"
-        }] : []
-      });
-    });
-    
-    console.log(`✅ Added ${customerData.issues.length} individual issue sections with buttons`);
   }
   
   console.log(`📊 Total sections in widget: ${sections.length}`);
@@ -7359,100 +7624,3 @@ process.on('SIGINT', () => {
   console.log('\n👋 Shutting down webhook server...');
   process.exit(0);
 });
-
-/*
-===============================================
-🧪 CURL TEST COMMANDS
-===============================================
-
-1️⃣ HEALTH CHECK
-curl -X GET http://localhost:3000/
-
-2️⃣ CANCEL ORDER SELECTION (Simulate user clicking "Cancel Order")
-curl -X POST http://localhost:3000/webhook \
-  -H "Content-Type: application/json" \
-  -d '{
-    "handler": "message",
-    "operation": "message",
-    "visitor": {
-      "name": "Arjun",
-      "email": "arjunfree256@gmail.com"
-    },
-    "message": {
-      "text": "Cancel Order"
-    }
-  }'
-
-3️⃣ ORDER SELECTION (Simulate user clicking order button)
-curl -X POST http://localhost:3000/webhook \
-  -H "Content-Type: application/json" \
-  -d '{
-    "handler": "message",
-    "operation": "message",
-    "visitor": {
-      "name": "Arjun",
-      "email": "arjunfree256@gmail.com"
-    },
-    "message": {
-      "text": "Order ORD1765130519686 | Bluetooth Speaker | ₹3798"
-    }
-  }'
-
-4️⃣ FORM SUBMIT - CANCEL ORDER
-curl -X POST http://localhost:3000/salesiq/form-submit \
-  -H "Content-Type: application/json" \
-  -H "x-webhook-secret: your_shared_secret_here_change_in_production" \
-  -d '{
-    "order_id": "ORD1765130519686",
-    "user_id": "arjunfree256@gmail.com",
-    "action": "cancel",
-    "cancellation_reason": "Changed my mind",
-    "refund_method": "original_payment",
-    "idempotency_token": "cancel_1234567890_ORD1765130519686"
-  }'
-
-5️⃣ FORM SUBMIT - RETURN ORDER
-curl -X POST http://localhost:3000/salesiq/form-submit \
-  -H "Content-Type: application/json" \
-  -H "x-webhook-secret: your_shared_secret_here_change_in_production" \
-  -d '{
-    "order_id": "ORD1765130519686",
-    "user_id": "arjunfree256@gmail.com",
-    "action": "return",
-    "cancellation_reason": "Product defective",
-    "refund_method": "bank_transfer",
-    "bank_details": "Account: 1234567890, IFSC: HDFC0001234",
-    "idempotency_token": "return_1234567890_ORD1765130519686"
-  }'
-
-6️⃣ GET CANCELLABLE ORDERS (Flutter API)
-curl -X POST http://localhost:3000/api/get-cancellable-orders \
-  -H "Content-Type: application/json" \
-  -H "x-webhook-secret: your_shared_secret_here_change_in_production" \
-  -d '{
-    "customer_email": "arjunfree256@gmail.com"
-  }'
-
-7️⃣ RETURN ORDER SELECTION
-curl -X POST http://localhost:3000/webhook \
-  -H "Content-Type: application/json" \
-  -d '{
-    "handler": "message",
-    "operation": "message",
-    "visitor": {
-      "name": "Arjun",
-      "email": "arjunfree256@gmail.com"
-    },
-    "message": {
-      "text": "🔄 Return Order"
-    }
-  }'
-
-===============================================
-📝 NOTES:
-- Replace localhost:3000 with your actual server URL
-- Update x-webhook-secret header with your actual secret
-- Update order_id and customer_email with real values
-- For production, use HTTPS endpoints
-===============================================
-*/
