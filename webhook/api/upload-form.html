@@ -240,17 +240,10 @@
             <p><strong>How it works:</strong> Upload → AI Analysis → Instant Results</p>
         </div>
 
-        <button class="btn" id="cameraBtn" style="background: linear-gradient(135deg, #28a745 0%, #20c997 100%); margin-bottom: 15px;">
+        <button class="btn" id="cameraBtn" style="background: linear-gradient(135deg, #28a745 0%, #20c997 100%);">
             📸 Take Photo with Camera
         </button>
 
-        <div class="drop-zone" id="dropZone">
-            <div class="drop-zone-icon">📤</div>
-            <div class="drop-zone-text">Drag & Drop your image here</div>
-            <div class="drop-zone-hint">or click to browse (JPG, PNG, GIF, WebP - Max 10MB)</div>
-        </div>
-
-        <input type="file" id="fileInput" accept="image/jpeg,image/jpg,image/png,image/gif,image/webp">
         <input type="file" id="cameraInput" accept="image/*" capture="environment" style="display: none;">
 
         <div class="preview-container" id="previewContainer">
@@ -258,7 +251,7 @@
             <img id="previewImage" class="preview-image" alt="Preview">
         </div>
 
-        <button class="btn" id="uploadBtn" disabled>Upload & Verify</button>
+        <button class="btn" id="uploadBtn" disabled>Verify Product</button>
 
         <div class="loading" id="loading">
             <div class="spinner"></div>
@@ -285,10 +278,10 @@
             console.log(`  - ${key}: ${value}`);
         }
         
-        const email = urlParams.get('email') || 'arjunfree256@gmail.com';
-        const orderId = urlParams.get('orderId') || 'ORD1765202457052';
-        const productId = urlParams.get('productId') || '';
-        const imageUrl = urlParams.get('imageUrl') || '';
+        const email = decodeURIComponent(urlParams.get('email') || 'arjunfree256@gmail.com');
+        const orderId = decodeURIComponent(urlParams.get('orderId') || 'ORD1765202457052');
+        const productId = decodeURIComponent(urlParams.get('productId') || '');
+        const imageUrl = decodeURIComponent(urlParams.get('imageUrl') || '');
 
         console.log('📧 Email (final):', email);
         console.log('📦 Order ID (final):', orderId);
@@ -298,8 +291,6 @@
         document.getElementById('customerEmail').textContent = email;
         document.getElementById('orderId').textContent = orderId || 'Auto-detect';
 
-        const dropZone = document.getElementById('dropZone');
-        const fileInput = document.getElementById('fileInput');
         const cameraInput = document.getElementById('cameraInput');
         const cameraBtn = document.getElementById('cameraBtn');
         const uploadBtn = document.getElementById('uploadBtn');
@@ -315,36 +306,6 @@
 
         // Camera input change
         cameraInput.addEventListener('change', (e) => {
-            if (e.target.files.length > 0) {
-                handleFile(e.target.files[0]);
-            }
-        });
-
-        // Click to browse
-        dropZone.addEventListener('click', () => fileInput.click());
-
-        // Drag and drop handlers
-        dropZone.addEventListener('dragover', (e) => {
-            e.preventDefault();
-            dropZone.classList.add('dragover');
-        });
-
-        dropZone.addEventListener('dragleave', () => {
-            dropZone.classList.remove('dragover');
-        });
-
-        dropZone.addEventListener('drop', (e) => {
-            e.preventDefault();
-            dropZone.classList.remove('dragover');
-            
-            const files = e.dataTransfer.files;
-            if (files.length > 0) {
-                handleFile(files[0]);
-            }
-        });
-
-        // File input change
-        fileInput.addEventListener('change', (e) => {
             if (e.target.files.length > 0) {
                 handleFile(e.target.files[0]);
             }
@@ -373,8 +334,6 @@
                 previewImage.src = e.target.result;
                 previewContainer.style.display = 'block';
                 uploadBtn.disabled = false;
-                dropZone.querySelector('.drop-zone-text').textContent = file.name;
-                dropZone.querySelector('.drop-zone-icon').textContent = '✅';
             };
             reader.readAsDataURL(file);
         }
@@ -386,7 +345,6 @@
             uploadBtn.disabled = true;
             loading.style.display = 'block';
             resultContainer.style.display = 'none';
-            dropZone.classList.add('uploading');
 
             const formData = new FormData();
             formData.append('image', selectedFile);
@@ -415,7 +373,6 @@
                 const result = await response.json();
 
                 loading.style.display = 'none';
-                dropZone.classList.remove('uploading');
 
                 if (result.success) {
                     displayResult(result);
@@ -435,7 +392,6 @@
                 }
             } catch (error) {
                 loading.style.display = 'none';
-                dropZone.classList.remove('uploading');
                 displayError('Network error: ' + error.message);
             }
 

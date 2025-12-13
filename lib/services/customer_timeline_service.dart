@@ -6,7 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 class CustomerTimelineService {
-  static const String _baseUrl = 'https://nonchivalrous-paranoidly-cara.ngrok-free.dev'; // Update with your webhook URL
+  static const String _baseUrl = 'https://2fd10a7156a6.ngrok-free.app'; // Update with your webhook URL
   static const String _timelineEndpoint = '/webhook';
   
   // 📱 FLUTTER APP ACTIVITY TRACKING
