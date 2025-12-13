@@ -3,6 +3,8 @@
 // Usage: node webhook_local.js
 // Reference: https://www.zoho.com/salesiq/help/developer-section/form-controllers.html
 
+require('dotenv').config();
+
 const express = require('express');
 const cors = require('cors');
 const admin = require('firebase-admin');
@@ -18,12 +20,12 @@ const PORT = process.env.PORT || 3000;
 const BASE_URL = process.env.BASE_URL || 'https://nonchivalrous-paranoidly-cara.ngrok-free.dev';
 
 // 🤖 GEMINI AI Configuration
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || 'AIzaSyAKdcXWPYPUPU_lsA-CGDPSVzi4kl3LEMQ';
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 
 // 💳 RAZORPAY Configuration
-const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID || 'rzp_test_Rqgmk2mF6VDOKt';
-const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || 'Sd9mmAfN4RJTC99YY6dFFM3t';
+const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID;
+const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET;
 const razorpay = new Razorpay({
   key_id: RAZORPAY_KEY_ID,
   key_secret: RAZORPAY_KEY_SECRET
@@ -56,11 +58,19 @@ const upload = multer({
 });
 
 // 🔐 WEBHOOK SECRET for SalesIQ Form Controller
-const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAkcF061XP/AvyIU/lGXWo1rqARBPgGxq3aZ2htG24fcY9oO35/8hVoO+vYjU5bBZRXheq2FnvDBMDrsGaOUZ1Q5dcfmZBRF0wZzw26c4qO6Ra8as7qqqF1SuQLVDvmzE2oDqEpeC8fiaX63zB3tqOIbebcfrIKB446VS3LWKB59Iqxpi3shjpLvJeEYKkFx/9H+sGyjS4YUuEIW+NUVVAv0qF6uJps3pZM5EALyxw9q7atcEHylRqYSm3PTu0j57ggxNCo9Ajm9d7fgTKlYaMZgnnbiJpwXZPsvtZfZSdMgdzPPhjmuVqyR8By/4E2XBhHf5byx8Tg5ifkc6h0UuDlQIDAQAB';
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
 
 // 💾 In-memory session storage for user selections (temporary data)
 // Maps: userEmail -> { orders: [], reasons: {}, refunds: {} }
 const userSessions = new Map();
+
+// 💾 In-memory storage for expiry upload sessions
+// Maps: email -> { orderId, productId, imageUrl, timestamp }
+const expiryUploadSessions = new Map();
+
+// 💾 In-memory storage for product verification upload sessions
+// Maps: email -> { orderId, productId, imageUrl, timestamp }
+const productUploadSessions = new Map();
 // 🔐 HMAC SHA256 Signature Verification
 function verifyWebhookSignature(payload, signature) {
   if (!signature) return false;
@@ -128,6 +138,11 @@ app.get('/upload-form.html', (req, res) => {
   res.sendFile(path.join(__dirname, 'upload-form.html'));
 });
 
+// Serve expiry upload form HTML
+app.get('/expiry-upload-form.html', (req, res) => {
+  res.sendFile(path.join(__dirname, 'expiry-upload-form.html'));
+});
+
 // Serve payment form HTML
 app.get('/payment.html', (req, res) => {
   res.sendFile(path.join(__dirname, 'payment.html'));
@@ -160,34 +175,55 @@ async function analyzeImageWithHuggingFace(uploadedImagePath, productImageUrl) {
     console.log('📸 Uploaded image:', uploadedImagePath);
     console.log('🔗 Product URL:', productImageUrl);
 
-    // Download product image from URL
-    const productImagePath = path.join(__dirname, 'uploads', `product-${Date.now()}.jpg`);
-    const response = await axios({
-      method: 'get',
-      url: productImageUrl,
-      responseType: 'stream'
-    });
-    
-    const writer = fs.createWriteStream(productImagePath);
-    response.data.pipe(writer);
-    
-    await new Promise((resolve, reject) => {
-      writer.on('finish', resolve);
-      writer.on('error', reject);
-    });
-
-    console.log('✅ Product image downloaded');
-
-    // Prepare images for Gemini
+    // Prepare uploaded image
     const uploadedImage = fileToGenerativePart(uploadedImagePath, 'image/jpeg');
-    const productImage = fileToGenerativePart(productImagePath, 'image/jpeg');
+    let productImage = null;
+    let productImagePath = null;
+
+    // Try to download product image from URL
+    try {
+      productImagePath = path.join(__dirname, 'uploads', `product-${Date.now()}.jpg`);
+      console.log('⬇️ Attempting to download product image...');
+      
+      const response = await axios({
+        method: 'get',
+        url: productImageUrl,
+        responseType: 'stream',
+        timeout: 10000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+      });
+      
+      const writer = fs.createWriteStream(productImagePath);
+      response.data.pipe(writer);
+      
+      await new Promise((resolve, reject) => {
+        writer.on('finish', resolve);
+        writer.on('error', reject);
+      });
+
+      console.log('✅ Product image downloaded successfully');
+      productImage = fileToGenerativePart(productImagePath, 'image/jpeg');
+    } catch (downloadError) {
+      console.error('⚠️ Failed to download product image:', downloadError.message);
+      console.log('⚠️ Continuing analysis without reference image...');
+      productImage = null;
+    }
 
     // Initialize Gemini model with vision support
     const model = genAI.getGenerativeModel({ 
-      model: 'gemini-2.5-flash'
+      model: 'gemini-2.0-flash-exp'
     });
 
-    const prompt = `You are a product verification expert. Compare these two product images to determine if they are the SAME product model.
+    let prompt;
+    let contentParts;
+
+    // If product image is available, do comparison analysis
+    if (productImage && productImage.inlineData) {
+      console.log('✅ Product reference image available - performing comparison analysis');
+      
+      prompt = `You are a product verification expert. Compare these two product images to determine if they are the SAME product model.
 
 IMAGE 1: Customer's uploaded product image
 IMAGE 2: Original product reference image
@@ -250,12 +286,49 @@ Respond in this EXACT JSON format (no markdown):
   "damageDetected": "YES" or "NO"
 }`;
 
+      contentParts = [
+        { inlineData: uploadedImage.inlineData },
+        { inlineData: productImage.inlineData },
+        { text: prompt }
+      ];
+    } else {
+      console.log('⚠️ Product reference image unavailable - performing damage detection only');
+      
+      prompt = `You are a product damage detection expert. Analyze this product image for any visible damage.
+
+DAMAGE DETECTION:
+
+Look for these types of damage:
+- Broken or cracked parts
+- Large scratches (>1cm)
+- Missing pieces
+- Bent/deformed structure
+- Physical defects
+
+IGNORE these (NOT damage):
+- Minor scratches or wear
+- Dust, dirt, fingerprints
+- Lighting reflections
+- Normal usage marks
+- Packaging or background issues
+
+Since we cannot verify if this is the correct product (reference image unavailable), we will assume it matches and focus only on damage detection.
+
+Respond in this EXACT JSON format (no markdown):
+{
+  "isMatch": "YES",
+  "damageDetected": "YES" or "NO"
+}`;
+
+      contentParts = [
+        { inlineData: uploadedImage.inlineData },
+        { text: prompt }
+      ];
+    }
+
     console.log('🤖 Calling Gemini API...');
-    const result = await model.generateContent([
-      { inlineData: uploadedImage.inlineData },
-      { inlineData: productImage.inlineData },
-      { text: prompt }
-    ]);
+    
+    const result = await model.generateContent(contentParts);
 
     const responseText = result.response.text();
     console.log('🤖 Gemini Response:', responseText);
@@ -289,7 +362,7 @@ Respond in this EXACT JSON format (no markdown):
     console.log('✅ Analysis complete:', analysisResult);
 
     // Clean up downloaded product image
-    if (fs.existsSync(productImagePath)) {
+    if (productImagePath && fs.existsSync(productImagePath)) {
       fs.unlinkSync(productImagePath);
     }
 
@@ -297,12 +370,121 @@ Respond in this EXACT JSON format (no markdown):
 
   } catch (error) {
     console.error('❌ Gemini AI Error:', error.message);
+    console.error('Error details:', error.response?.data || error);
     
-    // Return fallback result
+    // Return fallback result - assume product matches if AI fails
     return {
       isMatch: true,
       damageDetected: false,
-      confidence: 85
+      confidence: 70,
+      error: 'AI analysis failed, manual review recommended'
+    };
+  }
+}
+
+// 📅 EXTRACT EXPIRY DATE WITH GEMINI AI (OCR)
+async function extractExpiryDateWithGemini(uploadedImagePath, productName) {
+  try {
+    console.log('🤖 Starting Gemini AI expiry date OCR...');
+    console.log('📸 Uploaded image:', uploadedImagePath);
+    console.log('📦 Product name:', productName);
+
+    // Prepare image for Gemini
+    const uploadedImage = fileToGenerativePart(uploadedImagePath, 'image/jpeg');
+
+    // Initialize Gemini model with vision support
+    const model = genAI.getGenerativeModel({ 
+      model: 'gemini-2.0-flash-exp'
+    });
+
+    const currentDate = new Date();
+    const currentDateStr = currentDate.toISOString().split('T')[0]; // YYYY-MM-DD format
+
+    const prompt = `You are an OCR expert specializing in reading expiry dates from product images.
+
+ANALYZE THIS IMAGE:
+- Product: ${productName}
+- Current Date: ${currentDateStr}
+
+TASK:
+1. Look for expiry date, best before date, or use by date on the product
+2. Extract the date in YYYY-MM-DD format
+3. Compare with current date to determine if expired
+
+LOOK FOR THESE LABELS:
+- "EXP:", "Expiry:", "Expires:", "Best Before:", "Use By:", "BB:", "MFG:"
+- Date formats: DD/MM/YYYY, MM/YYYY, YYYY-MM-DD, DD-MM-YYYY
+- Month names: Jan, Feb, Mar, etc.
+
+IMPORTANT:
+- If you find multiple dates, use the EXPIRY date (not manufacturing date)
+- If only month/year is given, assume last day of that month
+- If date is unclear or not found, set "dateFound" to false
+
+Respond in this EXACT JSON format (no markdown):
+{
+  "dateFound": true or false,
+  "expiryDate": "YYYY-MM-DD" or "Not found",
+  "currentDate": "${currentDateStr}",
+  "isExpired": true or false,
+  "confidence": 0-100,
+  "extractedText": "raw text you found"
+}`;
+
+    console.log('🤖 Calling Gemini API for OCR...');
+    const result = await model.generateContent([
+      { inlineData: uploadedImage.inlineData },
+      { text: prompt }
+    ]);
+
+    const responseText = result.response.text();
+    console.log('🤖 Gemini OCR Response:', responseText);
+
+    // Parse JSON response
+    let expiryResult;
+    try {
+      // Extract JSON from markdown code blocks if present
+      const jsonMatch = responseText.match(/```json\n([\s\S]*?)\n```/) || 
+                       responseText.match(/```\n([\s\S]*?)\n```/) ||
+                       responseText.match(/\{[\s\S]*\}/);
+      const jsonText = jsonMatch ? (jsonMatch[1] || jsonMatch[0]) : responseText;
+      const parsed = JSON.parse(jsonText);
+      
+      expiryResult = {
+        dateFound: parsed.dateFound === true,
+        expiryDate: parsed.expiryDate || 'Not found',
+        currentDate: currentDateStr,
+        isExpired: parsed.isExpired === true,
+        confidence: parsed.confidence || 0,
+        extractedText: parsed.extractedText || ''
+      };
+    } catch (parseError) {
+      console.error('❌ JSON parse error:', parseError);
+      // Fallback response - assume not expired if can't parse
+      expiryResult = {
+        dateFound: false,
+        expiryDate: 'Not found',
+        currentDate: currentDateStr,
+        isExpired: false,
+        confidence: 0,
+        extractedText: 'Error parsing response'
+      };
+    }
+
+    console.log('✅ Expiry OCR complete:', expiryResult);
+    return expiryResult;
+
+  } catch (error) {
+    console.error('❌ Gemini AI OCR Error:', error.message);
+    
+    // Return fallback result - assume not expired on error
+    return {
+      dateFound: false,
+      expiryDate: 'Error',
+      currentDate: new Date().toISOString().split('T')[0],
+      isExpired: false,
+      confidence: 0,
+      extractedText: error.message
     };
   }
 }
@@ -2593,9 +2775,54 @@ app.post('/webhook', async (req, res) => {
           const issue = customerData.issues?.find(i => i.orderId === orderId);
           if (issue) {
             console.log('✅ Found issue:', issue.id);
+            console.log('📋 Issue data:', JSON.stringify(issue, null, 2));
+            if (issue.paymentUrl) {
+              console.log('💳 Payment URL exists:', issue.paymentUrl);
+            } else {
+              console.log('⚠️ No payment URL found in issue');
+            }
+          } else {
+            console.log('⚠️ No issue found for order:', orderId);
           }
           
-          // Create form with order details
+          // If payment URL already exists, show it in widget instead of form
+          if (issue && issue.paymentUrl) {
+            console.log('🌐 Displaying existing payment link in widget...');
+            return res.status(200).json({
+              type: "widget_detail",
+              sections: [
+                {
+                  name: "order_info",
+                  layout: "info",
+                  title: "📋 Order Details",
+                  data: [
+                    { label: "Order ID", value: order.id },
+                    { label: "Product", value: order.items?.[0]?.productName || 'N/A' },
+                    { label: "Amount", value: `₹${order.totalAmount}` },
+                    { label: "Issue Type", value: issue.issueType || 'N/A' },
+                    { label: "Status", value: issue.status || order.status }
+                  ]
+                },
+                {
+                  name: `payment_section_${orderId}`,
+                  layout: "listing",
+                  title: "💳 Payment Link",
+                  data: [
+                    {
+                      name: `pay_${orderId}`,
+                      title: "🔐 Complete Payment",
+                      text: `Order: ${orderId}`,
+                      subtext: `Amount: ₹${order.totalAmount}`,
+                      link: issue.paymentUrl,
+                      link_hint: "Click here to pay securely"
+                    }
+                  ]
+                }
+              ]
+            });
+          }
+          
+          // Create form with order details (if no payment URL exists yet)
           const orderDetailsForm = {
             type: "form",
             name: "order",
@@ -2689,6 +2916,7 @@ app.post('/webhook', async (req, res) => {
       if (formName === 'order' && formData.action === 'submit') {
         console.log('💳 Processing payment form submission...');
         
+        const issueId = formValues.issue_id?.value;
         const orderId = formValues.order_id?.value;
         const productName = formValues.product_name?.value;
         const amountStr = formValues.amount?.value;
@@ -2697,6 +2925,7 @@ app.post('/webhook', async (req, res) => {
         // Extract numeric amount
         const amount = amountStr ? amountStr.replace('₹', '').trim() : '0';
         
+        console.log('Issue ID:', issueId);
         console.log('Order ID:', orderId);
         console.log('Product:', productName);
         console.log('Amount:', amount);
@@ -2705,26 +2934,47 @@ app.post('/webhook', async (req, res) => {
         const baseUrl = BASE_URL;
         const paymentUrl = `${baseUrl}/payment.html?orderId=${orderId}&amount=${amount}&product=${encodeURIComponent(productName)}&status=${encodeURIComponent(status)}`;
         
-        // Send payment message to chat
-        const paymentMessage = `💳 **Payment Ready**\n\n` +
-          `📦 Order ID: ${orderId}\n` +
-          `💰 Amount: ₹${amount}\n` +
-          `🛍️ Product: ${productName}\n\n` +
-          `**How to Pay:**\n` +
-          `1. Click the secure payment link below\n` +
-          `2. Complete payment using UPI/Card/NetBanking/Wallet\n` +
-          `3. You'll receive instant confirmation\n\n` +
-          `🔐 Secure Payment Link:\n${paymentUrl}\n\n` +
-          `✅ Powered by Razorpay - 100% Safe & Secure`;
+        console.log('✅ Payment URL generated:', paymentUrl);
         
-        console.log('✅ Payment message generated');
+        // Save payment URL to Firestore issue document
+        if (issueId && issueId !== 'N/A') {
+          try {
+            console.log('💾 Saving payment URL to Firestore issue:', issueId);
+            await db.collection('issues').doc(issueId).update({
+              paymentUrl: paymentUrl,
+              paymentGenerated: true,
+              paymentGeneratedAt: admin.firestore.FieldValue.serverTimestamp(),
+              updatedAt: admin.firestore.FieldValue.serverTimestamp()
+            });
+            console.log('✅ Payment URL saved to Firestore');
+          } catch (firestoreError) {
+            console.error('⚠️ Failed to save payment URL to Firestore:', firestoreError.message);
+          }
+        }
         
+        console.log('🌐 Displaying payment link in widget...');
+        
+        // Return sections_edit response with payment link that opens in browser
         return res.status(200).json({
-          action: "reply",
-          replies: [{
-            text: paymentMessage
-          }],
-          suggestions: ["🏠 Back to Menu"]
+          type: "sections_edit",
+          success_banner: "✅ Payment link ready!",
+          sections: [
+            {
+              name: `payment_section_${orderId}`,
+              layout: "listing",
+              title: "💳 Complete Payment",
+              data: [
+                {
+                  name: `pay_${orderId}`,
+                  title: "🔐 Secure Payment",
+                  text: `Order: ${orderId}`,
+                  subtext: `Amount: ₹${amount}`,
+                  link: paymentUrl,
+                  link_hint: "Click here to pay securely"
+                }
+              ]
+            }
+          ]
         });
       }
       
@@ -2885,6 +3135,377 @@ app.post('/webhook', async (req, res) => {
         hasInfo: true
       };
       
+      // 🔄 AUTO-SAVE PENDING PRODUCT VERIFICATION WHEN USER RETURNS TO CHAT
+      const session = userSessions.get(visitorEmail);
+      if (session && session.pendingProductVerification && messageText) {
+        console.log('💾 User returned to chat - saving pending product verification to Firestore...');
+        const pendingData = session.pendingProductVerification;
+        
+        try {
+          if (pendingData.firestoreDocId) {
+            // Update existing expiry verification document with product verification
+            console.log('📝 Updating existing expiry verification document:', pendingData.firestoreDocId);
+            await db.collection('issues').doc(pendingData.firestoreDocId).update({
+              productVerification: pendingData.productVerification,
+              status: pendingData.status,
+              resolution: pendingData.resolution,
+              updatedAt: admin.firestore.FieldValue.serverTimestamp()
+            });
+            console.log('✅ Expiry verification updated with product verification');
+          } else {
+            // Create new product verification document
+            console.log('📝 Creating new product verification document:', pendingData.id);
+            await db.collection('issues').doc(pendingData.id).set({
+              ...pendingData,
+              createdAt: admin.firestore.FieldValue.serverTimestamp(),
+              updatedAt: admin.firestore.FieldValue.serverTimestamp()
+            });
+            console.log('✅ New product verification saved to Firestore');
+          }
+          
+          // Clear the pending verification from session
+          delete session.pendingProductVerification;
+          console.log('✅ Pending product verification cleared from session');
+        } catch (firestoreError) {
+          console.error('⚠️ Error saving product verification to Firestore:', firestoreError.message);
+        }
+      }
+      
+      // 📊 HANDLE "CHECK EXPIRY RESULTS" BUTTON
+      if (messageText.toLowerCase().includes('check expiry results')) {
+        console.log('✅ User clicked Check Expiry Results button');
+        console.log('📧 Looking for expiry verification for email:', visitorEmail);
+        
+        try {
+          // First, check if there's a pending expiry verification in session
+          const session = userSessions.get(visitorEmail);
+          let matchingIssue = null;
+          
+          if (session && session.pendingExpiryVerification) {
+            console.log('💾 Found pending expiry verification in session, saving to Firestore...');
+            const pendingData = session.pendingExpiryVerification;
+            
+            // Save to Firestore
+            try {
+              await db.collection('issues').doc(pendingData.issueId).set({
+                ...pendingData,
+                createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                updatedAt: admin.firestore.FieldValue.serverTimestamp()
+              });
+              console.log(`✅ Expiry verification ${pendingData.issueId} saved to Firestore`);
+              
+              // Use the pending data as the matching issue
+              matchingIssue = pendingData;
+              
+              // Clear the pending verification from session
+              delete session.pendingExpiryVerification;
+            } catch (firestoreError) {
+              console.error('⚠️ Firestore save failed:', firestoreError.message);
+            }
+          }
+          
+          // If no pending verification, query Firebase for existing records
+          if (!matchingIssue) {
+            console.log('🔍 No pending verification, querying Firestore...');
+            const issuesSnapshot = await db.collection('issues')
+              .where('type', '==', 'expiry_verification')
+              .orderBy('createdAt', 'desc')
+              .limit(10)
+              .get();
+            
+            console.log(`📋 Found ${issuesSnapshot.size} expiry verification records`);
+            
+            // Find the most recent one that matches this user's email
+            issuesSnapshot.forEach(doc => {
+              const data = doc.data();
+              console.log(`  Checking issue ${data.id}: email=${data.customerEmail}`);
+              
+              if (data.customerEmail === visitorEmail || 
+                  data.customerEmail.includes(visitorEmail.split('@')[0])) {
+                if (!matchingIssue) {
+                  matchingIssue = data;
+                  console.log(`  ✅ Found matching issue: ${data.id}`);
+                }
+              }
+            });
+          }
+          
+          if (matchingIssue) {
+            const expiryInfo = matchingIssue.expiryVerification;
+            
+            // If product is expired, redirect to product verification (like defect verification)
+            if (expiryInfo.isExpired) {
+              console.log('✅ Product is expired - redirecting to product verification');
+              
+              // Resolve orderId and productId if they're missing from the stored issue
+              let orderId = matchingIssue.orderId || '';
+              let productId = matchingIssue.productId || '';
+              let imageUrl = matchingIssue.originalProductImageUrl || '';
+              
+              // If orderId or productId is missing, try to resolve from customer data using imageUrl
+              if ((!orderId || !productId) && imageUrl) {
+                console.log('⚠️ Missing orderId/productId in issue, resolving from customer data...');
+                try {
+                  const customerData = await getCustomerData(visitorEmail);
+                  const normalize = (v) => (v || '').toString().trim().toLowerCase();
+                  const itemImageUrl = (it) => it?.imageUrl || it?.imageurl || it?.image_url || it?.image || it?.productImage || null;
+                  
+                  // Search delivered orders for matching imageUrl
+                  if (customerData.deliveredOrders) {
+                    for (const order of customerData.deliveredOrders) {
+                      if (order.items) {
+                        for (const item of order.items) {
+                          const itemImg = itemImageUrl(item);
+                          if (itemImg && normalize(itemImg).includes(normalize(imageUrl).split('?')[0].split('=')[0])) {
+                            orderId = order.id;
+                            productId = item.productId || item.product_id || item.id || '';
+                            console.log('✅ Resolved from delivered orders:', { orderId, productId });
+                            break;
+                          }
+                        }
+                        if (orderId) break;
+                      }
+                    }
+                  }
+                  
+                  // If still not found, search regular orders
+                  if (!orderId && customerData.orders) {
+                    for (const order of customerData.orders) {
+                      if (order.items) {
+                        for (const item of order.items) {
+                          const itemImg = itemImageUrl(item);
+                          if (itemImg && normalize(itemImg).includes(normalize(imageUrl).split('?')[0].split('=')[0])) {
+                            orderId = order.id;
+                            productId = item.productId || item.product_id || item.id || '';
+                            console.log('✅ Resolved from regular orders:', { orderId, productId });
+                            break;
+                          }
+                        }
+                        if (orderId) break;
+                      }
+                    }
+                  }
+                } catch (resolveError) {
+                  console.error('❌ Error resolving orderId/productId:', resolveError);
+                }
+              }
+              
+              // Store product verification session for reliable parameter retrieval
+              productUploadSessions.set(visitorEmail, {
+                orderId: orderId,
+                productId: productId,
+                imageUrl: imageUrl,
+                productName: matchingIssue.productName,
+                timestamp: Date.now()
+              });
+              console.log('💾 Stored product verification session for:', visitorEmail);
+              
+              const verificationUrl = `${BASE_URL}/upload-form.html?email=${encodeURIComponent(visitorEmail)}&orderId=${encodeURIComponent(orderId)}&productId=${encodeURIComponent(productId)}&imageUrl=${encodeURIComponent(imageUrl)}`;
+              
+              console.log('🔗 Product verification URL:', verificationUrl);
+              console.log('  Using original product image:', imageUrl);
+              
+              const response = {
+                action: "reply",
+                replies: [{
+                  text: `✅ **Expiry Verified - Product is EXPIRED**\n\n` +
+                        `📦 **Order Details:**\n` +
+                        `Product: ${matchingIssue.productName}\n` +
+                        `Order ID: ${matchingIssue.orderId}\n` +
+                        `Amount: ₹${matchingIssue.amount}\n\n` +
+                        `📅 **Expiry Check Results:**\n` +
+                        `Expiry Date: ${expiryInfo.expiryDate}\n` +
+                        `Current Date: ${expiryInfo.currentDate}\n` +
+                        `Status: EXPIRED ✅\n` +
+                        `Confidence: ${expiryInfo.confidence}%\n\n` +
+                        `🔍 **Next Step: Product Verification**\n` +
+                        `Please verify that this is the correct product you ordered.\n\n` +
+                        `👉 Click the link below to verify the product:\n${verificationUrl}`
+                }],
+                suggestions: [
+                  "🔍 Check Verification Status",
+                  "🏠 Back to Menu"
+                ]
+              };
+              
+              return res.status(200).json(response);
+            } else {
+              // Product is not expired - show message and contact admin
+              console.log('⚠️ Product is not expired - showing contact admin message');
+              
+              const response = {
+                action: "reply",
+                replies: [{
+                  text: `⚠️ **Expiry Verification Complete**\n\n` +
+                        `📦 **Order Details:**\n` +
+                        `Product: ${matchingIssue.productName}\n` +
+                        `Order ID: ${matchingIssue.orderId}\n` +
+                        `Amount: ₹${matchingIssue.amount}\n\n` +
+                        `📅 **Expiry Check Results:**\n` +
+                        `Expiry Date: ${expiryInfo.expiryDate}\n` +
+                        `Current Date: ${expiryInfo.currentDate}\n` +
+                        `Status: NOT EXPIRED\n` +
+                        `Confidence: ${expiryInfo.confidence}%\n\n` +
+                        `⚠️ The product is not expired yet. Please contact admin for more support.`
+                }],
+                suggestions: [
+                  "💬 Contact Admin",
+                  "🏠 Back to Menu"
+                ]
+              };
+              
+              return res.status(200).json(response);
+            }
+          } else {
+            console.log('⚠️ No matching expiry verification found');
+            return res.status(200).json({
+              action: "reply",
+              replies: [{ text: "❌ No expiry verification results found. Please upload an image first." }],
+              suggestions: ["🔄 Return Order", "🏠 Back to Menu"]
+            });
+          }
+        } catch (error) {
+          console.error('❌ Error fetching expiry verification from Firestore:', error);
+          return res.status(200).json({
+            action: "reply",
+            replies: [{ text: "❌ Error retrieving expiry verification results. Please try again." }],
+            suggestions: ["🔄 Return Order", "🏠 Back to Menu"]
+          });
+        }
+      }
+      
+      // 🔍 HANDLE "CHECK VERIFICATION STATUS" BUTTON (for expiry + product verification flow)
+      if (messageText.toLowerCase().includes('check verification status') || 
+          messageText.toLowerCase().includes('verification status')) {
+        console.log('✅ User clicked Check Verification Status button');
+        console.log('📧 Looking for verification for email:', visitorEmail);
+        
+        try {
+          // Query Firebase for the most recent expiry verification with product verification
+          const issuesSnapshot = await db.collection('issues')
+            .where('type', '==', 'expiry_verification')
+            .orderBy('createdAt', 'desc')
+            .limit(10)
+            .get();
+          
+          console.log(`📋 Found ${issuesSnapshot.size} expiry verification records`);
+          
+          // Find the most recent one that matches this user's email
+          let matchingIssue = null;
+          issuesSnapshot.forEach(doc => {
+            const data = doc.data();
+            console.log(`  Checking issue ${data.id}: email=${data.customerEmail}`);
+            
+            if (data.customerEmail === visitorEmail || 
+                data.customerEmail.includes(visitorEmail.split('@')[0])) {
+              if (!matchingIssue) {
+                matchingIssue = data;
+                console.log(`  ✅ Found matching issue: ${data.id}`);
+              }
+            }
+          });
+          
+          if (matchingIssue) {
+            // Check if product verification exists
+            if (matchingIssue.productVerification && matchingIssue.productVerification.isMatch) {
+              console.log('✅ Product verification found and verified - connecting to agent');
+              
+              const expiryInfo = matchingIssue.expiryVerification;
+              const productInfo = matchingIssue.productVerification;
+              
+              // Prepare order details for agent
+              const orderDetails = {
+                orderId: matchingIssue.orderId,
+                productName: matchingIssue.productName,
+                amount: matchingIssue.amount,
+                customerEmail: visitorEmail,
+                issueId: matchingIssue.id,
+                expiryDate: expiryInfo.expiryDate,
+                currentDate: expiryInfo.currentDate,
+                isExpired: expiryInfo.isExpired,
+                productVerified: productInfo.isMatch,
+                damageDetected: productInfo.damageDetected,
+                status: matchingIssue.status,
+                resolution: matchingIssue.resolution
+              };
+              
+              console.log('📋 Order Details for Agent:');
+              console.log(JSON.stringify(orderDetails, null, 2));
+              
+              // Display verification results and offer agent connection
+              const response = {
+                action: "reply",
+                replies: [{
+                  text: `✅ **Verification Complete**\n\n` +
+                        `📦 **Order Details:**\n` +
+                        `Product: ${matchingIssue.productName}\n` +
+                        `Order ID: ${matchingIssue.orderId}\n` +
+                        `Amount: ₹${matchingIssue.amount}\n\n` +
+                        `📅 **Expiry Verification:**\n` +
+                        `Expiry Date: ${expiryInfo.expiryDate}\n` +
+                        `Status: ${expiryInfo.isExpired ? 'EXPIRED ✅' : 'NOT EXPIRED'}\n` +
+                        `Confidence: ${expiryInfo.confidence}%\n\n` +
+                        `🔍 **Product Verification:**\n` +
+                        `Product Match: ${productInfo.isMatch ? 'YES ✅' : 'NO'}\n` +
+                        `Damage Detected: ${productInfo.damageDetected ? 'YES ⚠️' : 'NO'}\n` +
+                        `Confidence: ${productInfo.confidence}%\n\n` +
+                        `📋 **Return Request:**\n` +
+                        `Issue ID: ${matchingIssue.id}\n` +
+                        `Status: ${matchingIssue.status}\n` +
+                        `Resolution: ${matchingIssue.resolution}\n\n` +
+                        `Would you like to connect with a human agent to process your refund?`
+                }],
+                suggestions: [
+                  "🏠 Back to Menu"
+                ]
+              };
+              
+              console.log('📤 Sending verification results to chat');
+              
+              return res.status(200).json(response);
+            } else {
+              // Product not verified yet - ask user to verify
+              console.log('⚠️ Product verification not found or not verified - asking user to verify');
+              
+              // Generate product verification URL
+              const productId = matchingIssue.productId || '';
+              const imageUrl = matchingIssue.originalProductImageUrl || '';
+              const verificationUrl = `${BASE_URL}/upload-form.html?email=${encodeURIComponent(visitorEmail)}&orderId=${encodeURIComponent(matchingIssue.orderId)}&productId=${encodeURIComponent(productId)}&imageUrl=${encodeURIComponent(imageUrl)}`;
+              
+              const response = {
+                action: "reply",
+                replies: [{
+                  text: `⚠️ **Product Verification Required**\n\n` +
+                        `Your expiry verification is complete, but we need to verify the product.\n\n` +
+                        `📦 Product: ${matchingIssue.productName}\n` +
+                        `📦 Order ID: ${matchingIssue.orderId}\n\n` +
+                        `Please upload a photo of the product to complete verification:\n${verificationUrl}`
+                }],
+                suggestions: [
+                  "🔄 Return to Menu"
+                ]
+              };
+              
+              return res.status(200).json(response);
+            }
+          } else {
+            console.log('⚠️ No matching verification found');
+            return res.status(200).json({
+              action: "reply",
+              replies: [{ text: "❌ No verification found. Please start a return request first." }],
+              suggestions: ["🔄 Return Order", "🏠 Back to Menu"]
+            });
+          }
+        } catch (error) {
+          console.error('❌ Error fetching verification from Firestore:', error);
+          return res.status(200).json({
+            action: "reply",
+            replies: [{ text: "❌ Error retrieving verification status. Please try again." }],
+            suggestions: ["🔄 Return Order", "🏠 Back to Menu"]
+          });
+        }
+      }
+      
       // 🎯 HANDLE "SHOW VERIFICATION RESULTS" BUTTON
       if (messageText.toLowerCase().includes('show verification results') || 
           messageText.toLowerCase().includes('show results')) {
@@ -2910,8 +3531,10 @@ app.post('/webhook', async (req, res) => {
                 const issueData = issueDoc.data();
                 console.log('✅ Issue data fetched:', issueData);
                 
-                // Clear the verification result after displaying
-                delete session.verificationResult;
+                // In-memory storage for verification results (temporary - use database in production)
+                const verificationResults = new Map();
+                const expiryUploadSessions = new Map(); // In-memory storage for expiry upload sessions (email -> {orderId, productId, imageUrl})
+                
                 delete session.autoDisplayVerification;
                 
                 // Display complete verification results with all issue data
@@ -2942,7 +3565,6 @@ app.post('/webhook', async (req, res) => {
                           `Would you like to connect with a human agent?`
                   }],
                   suggestions: [
-                    "Yes, connect with agent",
                     "🏠 Back to Menu"
                   ]
                 };
@@ -3433,24 +4055,54 @@ app.post('/webhook', async (req, res) => {
         console.log('  Reason Code:', reasonCode);
         console.log('  Reason Display:', reasonDisplay);
         
-        // ✅ CHECK IF REASON IS EXPIRED OR Expired (YET TO BUILD)
+        // ✅ CHECK IF REASON IS EXPIRED - SHOW EXPIRY VERIFICATION UPLOAD
         if (reasonCode === 'expired' || reasonCode === 'expired') {
-          console.log('⚠️ Reason - feature yet to build:', reasonCode);
+          console.log('📅 Expired reason selected - showing expiry verification upload');
+          
+          // Get product details
+          const productName = order.items?.[0]?.productName || order.items?.[0]?.name || 'Product';
+          const productId = order.items?.[0]?.productId || order.items?.[0]?.product_id || order.items?.[0]?.id || '';
+          const imageUrl = order.items?.[0]?.imageUrl || order.items?.[0]?.imageurl || order.items?.[0]?.image_url || order.items?.[0]?.image || '';
+          
+          // Generate expiry verification upload URL
+          const ngrokUrl = BASE_URL;
+          const expiryUploadUrl = `${ngrokUrl}/expiry-upload-form.html?email=${encodeURIComponent(visitorEmail)}&orderId=${encodeURIComponent(order.id)}&productId=${encodeURIComponent(productId)}&imageUrl=${encodeURIComponent(imageUrl)}`;
+          
+          console.log('📅 Expiry upload URL parameters:');
+          console.log('  Email:', visitorEmail);
+          console.log('  Order ID:', order.id);
+          console.log('  Product ID:', productId);
+          console.log('  Image URL:', imageUrl);
+          console.log('📅 Generated expiry upload URL:', expiryUploadUrl);
+          
+          // Store session data for reliable parameter retrieval
+          expiryUploadSessions.set(visitorEmail, {
+            orderId: order.id,
+            productId: productId,
+            imageUrl: imageUrl,
+            productName: productName,
+            timestamp: Date.now()
+          });
+          console.log('💾 Stored expiry upload session for:', visitorEmail);
           
           const response = {
             action: "reply",
             replies: [{
-              text: `⚠️ **Feature Yet to Build**\n\n` +
-                    `📦 Order: ${order.id}\n` +
-                    `📝 Reason: ${reasonDisplay}\n\n` +
-                    `This feature is yet to be built. Please check back later or contact support.`
+              text: `📅 **Expiry Date Verification Required**\n\n` +
+                    `Product: ${productName}\n` +
+                    `Amount: ₹${order.totalAmount}\n` +
+                    `Reason: ${reasonDisplay}\n\n` +
+                    `Please upload a photo of the product showing the expiry date.\n\n` +
+                    `Our AI will extract and verify the expiry date automatically.\n\n` +
+                    `👉 Click the link below to upload:\n${expiryUploadUrl}`
             }],
             suggestions: [
+              "📊 Check Expiry Results",
               "🏠 Back to Menu"
             ]
           };
           
-          console.log('\n✅ Yet to build message created');
+          console.log('\n✅ Expiry verification request created');
           console.log('📤 Sending response:', JSON.stringify(response, null, 2));
           
           return res.status(200).json(response);
@@ -3485,8 +4137,18 @@ app.post('/webhook', async (req, res) => {
         
         // Generate upload link with order details for automated reasons
         const productName = order.items?.[0]?.productName || order.items?.[0]?.name || 'Product';
-        const productId = order.items?.[0]?.id || '';
-        const imageUrl = order.items?.[0]?.image || '';
+        const productId = order.items?.[0]?.productId || order.items?.[0]?.product_id || order.items?.[0]?.id || '';
+        const imageUrl = order.items?.[0]?.imageUrl || order.items?.[0]?.imageurl || order.items?.[0]?.image_url || order.items?.[0]?.image || '';
+        
+        // Store session data for reliable parameter retrieval
+        productUploadSessions.set(visitorEmail, {
+          orderId: order.id,
+          productId: productId,
+          imageUrl: imageUrl,
+          productName: productName,
+          timestamp: Date.now()
+        });
+        console.log('💾 Stored product upload session for:', visitorEmail);
         
         // IMPORTANT: Replace with your ngrok URL
         const ngrokUrl = 'https://nonchivalrous-paranoidly-cara.ngrok-free.dev';
@@ -3513,6 +4175,9 @@ app.post('/webhook', async (req, res) => {
         
         console.log('\n✅ Image verification request created');
         console.log('📤 Sending response:', JSON.stringify(response, null, 2));
+        console.log('📦 Order ID:', order.id);
+        console.log('🆔 Product ID:', productId);
+        console.log('🖼️ Image URL:', imageUrl);
         
         return res.status(200).json(response);
       }
@@ -3539,24 +4204,49 @@ app.post('/webhook', async (req, res) => {
         console.log('  Reason Code:', reasonCode);
         console.log('  Reason Display:', reasonDisplay);
         
-        // ✅ CHECK IF REASON IS EXPIRED OR Expired (YET TO BUILD)
+        // ✅ CHECK IF REASON IS EXPIRED - SHOW EXPIRY VERIFICATION UPLOAD
         if (reasonCode === 'expired' || reasonCode === 'expired') {
-          console.log('⚠️ Reason - feature yet to build:', reasonCode);
+          console.log('📅 Expired reason selected - showing expiry verification upload');
+          
+          // Get session to find order details
+          const session = userSessions.get(visitorEmail);
+          if (!session || !session.currentOrder) {
+            return res.status(200).json({
+              action: "reply",
+              replies: [{ text: "Session expired. Please start again." }],
+              suggestions: ["🔄 Return Order", "🏠 Back to Menu"]
+            });
+          }
+          
+          const order = session.currentOrder;
+          const productName = order.items?.[0]?.productName || order.items?.[0]?.name || 'Product';
+          const productId = order.items?.[0]?.productId || order.items?.[0]?.id || 'unknown';
+          const imageUrl = order.items?.[0]?.imageUrl || '';
+          
+          // Generate expiry verification upload URL
+          const ngrokUrl = BASE_URL;
+          const expiryUploadUrl = `${ngrokUrl}/expiry-upload-form.html?email=${encodeURIComponent(visitorEmail)}&orderId=${encodeURIComponent(orderId)}&productId=${encodeURIComponent(productId)}&imageUrl=${encodeURIComponent(imageUrl)}`;
+          
+          console.log('📅 Generated expiry upload URL:', expiryUploadUrl);
           
           const response = {
             action: "reply",
             replies: [{
-              text: `⚠️ **Feature Yet to Build**\n\n` +
-                    `📦 Order: ${orderId}\n` +
-                    `📝 Reason: ${reasonDisplay}\n\n` +
-                    `This feature is yet to be built. Please check back later or contact support.`
+              text: `📅 **Expiry Date Verification Required**\n\n` +
+                    `Product: ${productName}\n` +
+                    `Amount: ₹${order.totalAmount}\n` +
+                    `Reason: ${reasonDisplay}\n\n` +
+                    `Please upload a photo of the product showing the expiry date.\n\n` +
+                    `Our AI will extract and verify the expiry date automatically.\n\n` +
+                    `👉 Click the link below to upload:\n${expiryUploadUrl}`
             }],
             suggestions: [
+              "📊 Check Expiry Results",
               "🏠 Back to Menu"
             ]
           };
           
-          console.log('\n✅ Yet to build message created');
+          console.log('\n✅ Expiry verification request created');
           console.log('📤 Sending response:', JSON.stringify(response, null, 2));
           
           return res.status(200).json(response);
@@ -3656,7 +4346,6 @@ app.post('/webhook', async (req, res) => {
             'other': 'Other reason'
           };
           const reasonDisplayName = reasonDisplayMap[reasonCode] || reasonCode;
-          
           await saveIssueToFirestore({
             id: `RETURN_${Date.now()}`,
             customerEmail: visitorEmail,
@@ -4020,18 +4709,31 @@ app.post('/webhook', async (req, res) => {
             const selectedButton = messageText.trim();
             let orderIndex = -1;
             
+            console.log('\n🔍 DEBUG: Matching order button...');
+            console.log('  Selected Button:', selectedButton);
+            console.log('  Session Orders Count:', session.orders.length);
+            
             for (let i = 0; i < session.orders.length; i++) {
               const order = session.orders[i];
               const productName = order.items?.[0]?.productName || order.items?.[0]?.name || 'Product';
               const buttonText = `${productName} - ₹${order.totalAmount}`;
               
-              if (buttonText === selectedButton) {
+              console.log(`  Order ${i}: "${buttonText}" (Product: ${productName}, Amount: ${order.totalAmount})`);
+              console.log(`    Match? ${buttonText === selectedButton}`);
+              
+              console.log(`  Order ${i}: "${buttonText}" (Product: ${productName}, Amount: ${order.totalAmount})`);
+              console.log(`    Match? ${buttonText.toLowerCase() === selectedButton.toLowerCase()}`);
+              
+              if (buttonText.toLowerCase() === selectedButton.toLowerCase()) {
                 orderIndex = i;
                 break;
               }
             }
             
             if (orderIndex === -1) {
+              console.log('❌ No matching order found!');
+              console.log('  Expected format: "Product Name - ₹Amount"');
+              console.log('  Received:', selectedButton);
               return res.status(200).json({
                 action: "reply",
                 replies: [{ text: "Invalid selection. Please try again." }],
@@ -4359,7 +5061,9 @@ app.post('/webhook', async (req, res) => {
           console.log('✅ Cancellation processed:', result.refundReference);
           
           // Generate upload form URL with order details (URL encode parameters)
-          const uploadUrl = `${BASE_URL}/upload-form.html?email=${encodeURIComponent(visitorInfo.email)}&orderId=${encodeURIComponent(orderId)}`;
+          const uploadProductId = order?.items?.[0]?.productId || order?.items?.[0]?.product_id || '';
+          const uploadImageUrl = order?.items?.[0]?.imageUrl || order?.items?.[0]?.imageurl || order?.items?.[0]?.image_url || '';
+          const uploadUrl = `${BASE_URL}/upload-form.html?email=${encodeURIComponent(visitorInfo.email)}&orderId=${encodeURIComponent(orderId)}&productId=${encodeURIComponent(uploadProductId)}&imageUrl=${encodeURIComponent(uploadImageUrl)}`;
           
           return res.status(200).json({
             action: "reply",
@@ -4486,7 +5190,10 @@ app.post('/webhook', async (req, res) => {
           ? customerData.orders[0].id 
           : '';
         
-        const uploadUrl = `${BASE_URL}/upload-form.html?email=${visitorInfo.email}&orderId=${firstOrderId}`;
+        const firstOrder = customerData.orders && customerData.orders.length > 0 ? customerData.orders[0] : null;
+        const uploadProductId = firstOrder?.items?.[0]?.productId || firstOrder?.items?.[0]?.product_id || '';
+        const uploadImageUrl = firstOrder?.items?.[0]?.imageUrl || firstOrder?.items?.[0]?.imageurl || firstOrder?.items?.[0]?.image_url || '';
+        const uploadUrl = `${BASE_URL}/upload-form.html?email=${encodeURIComponent(visitorInfo.email)}&orderId=${encodeURIComponent(firstOrderId)}&productId=${encodeURIComponent(uploadProductId)}&imageUrl=${encodeURIComponent(uploadImageUrl)}`;
         
         // Send a message with the upload form link
         return res.status(200).json({
@@ -5347,6 +6054,271 @@ app.get('/api/forms/return-order/:orderId', async (req, res) => {
   }
 });
 
+// 📅 EXPIRY DATE OCR VERIFICATION ENDPOINT
+app.post('/api/upload-verify-expiry', upload.single('image'), async (req, res) => {
+  try {
+    console.log('\n📅 ===== EXPIRY DATE OCR VERIFICATION =====');
+    console.log('📋 Request body:', req.body);
+    
+    if (!req.file) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'No image file uploaded' 
+      });
+    }
+
+    let { email, orderId, productId, imageUrl, productName: bodyProductName } = req.body;
+    
+    console.log('📧 Raw email from body:', email);
+    console.log('📦 Raw orderId from body:', orderId);
+    console.log('🆔 Raw productId from body:', productId);
+    console.log('🖼️ Raw imageUrl from body:', imageUrl);
+    console.log('📁 Uploaded file:', req.file.filename);
+
+    // Debug: Log all body keys
+    console.log('📋 All request body keys:', Object.keys(req.body));
+    console.log('📋 Full request body:', JSON.stringify(req.body, null, 2));
+
+    // Fix corrupted email - extract the actual email if it's malformed
+    let cleanEmail = email;
+    if (email && email.includes('3A2F')) {
+      // Email is corrupted with URL encoding mixed in
+      // Extract the part before the corruption (e.g., "arjunfree256" from "arjunfree2563A2F...")
+      const emailPrefix = email.split('3A2F')[0];
+      console.log('⚠️ Email appears corrupted, extracted prefix:', emailPrefix);
+      
+      // Reconstruct email by adding @gmail.com
+      cleanEmail = emailPrefix + '@gmail.com';
+      console.log('🔧 Reconstructed email:', cleanEmail);
+    }
+
+    // Validate email
+    if (!cleanEmail || cleanEmail === 'Not provided' || cleanEmail === 'Not' || cleanEmail.length < 3) {
+      console.error('⚠️ Invalid email provided:', cleanEmail);
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Valid customer email is required. Please use the upload link from the chat.'
+      });
+    }
+
+    // Get customer data - try with cleaned email first, then search by prefix
+    let customerData = await getCustomerData(cleanEmail);
+    
+    // If not found and email looks corrupted, try to find by searching all customers
+    if (!customerData && email.includes('3A2F')) {
+      console.log('🔍 Email corrupted, searching for customer by order ID:', orderId);
+      // Query all customers and find by order ID
+      const customersSnapshot = await db.collection('customers').get();
+      for (const doc of customersSnapshot.docs) {
+        const data = doc.data();
+        const allOrders = [...(data.orders || []), ...(data.deliveredOrders || [])];
+        if (allOrders.some(o => o.id === orderId)) {
+          customerData = data;
+          cleanEmail = data.email;
+          console.log('✅ Found customer by order ID:', cleanEmail);
+          break;
+        }
+      }
+    }
+    
+    if (!customerData) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Customer not found' 
+      });
+    }
+
+    const normalize = (v) => (v || '').toString().trim().toLowerCase();
+    const itemProductId = (it) => it?.productId || it?.product_id || it?.id || null;
+    const itemProductName = (it) => it?.productName || it?.productname || it?.name || null;
+    const itemImageUrl = (it) => it?.imageUrl || it?.imageurl || it?.image_url || it?.image || it?.productImage || null;
+
+    // Resolve correct order/item (orderId from issues can be wrong; prefer matching by productId/imageUrl)
+    let resolvedOrderId = orderId || null;
+    let order = null;
+    let resolvedItem = null;
+
+    const matchesItem = (it) => {
+      if (!it) return false;
+      if (productId && normalize(itemProductId(it)) === normalize(productId)) {
+        console.log('✅ Matched by productId:', itemProductId(it));
+        return true;
+      }
+      if (imageUrl) {
+        const itemImg = itemImageUrl(it);
+        if (itemImg) {
+          // Extract base URL without query params for comparison
+          // Remove everything after ? or = to get the core filename
+          const baseImageUrl = normalize(imageUrl).split('?')[0].split('=')[0];
+          const baseItemImg = normalize(itemImg).split('?')[0].split('=')[0];
+          
+          console.log('🔍 Comparing imageUrls:');
+          console.log('  Received (base):', baseImageUrl);
+          console.log('  Item (base):', baseItemImg);
+          
+          // Extract just the filename for comparison
+          const receivedFilename = baseImageUrl.split('/').pop();
+          const itemFilename = baseItemImg.split('/').pop();
+          
+          console.log('  Received filename:', receivedFilename);
+          console.log('  Item filename:', itemFilename);
+          
+          if (receivedFilename && itemFilename && receivedFilename === itemFilename) {
+            console.log('✅ Matched by filename:', itemFilename);
+            return true;
+          }
+          
+          if (baseItemImg.includes(baseImageUrl) || baseImageUrl.includes(baseItemImg)) {
+            console.log('✅ Matched by base URL inclusion');
+            return true;
+          }
+        }
+      }
+      return false;
+    };
+
+    const pickItemFromOrder = (o) => {
+      if (!o || !Array.isArray(o.items) || o.items.length === 0) return null;
+      if (productId || imageUrl) {
+        const matched = o.items.find(matchesItem);
+        if (matched) return matched;
+      }
+      return o.items[0];
+    };
+
+    if (resolvedOrderId) {
+      if (customerData.deliveredOrders) {
+        order = customerData.deliveredOrders.find(o => o.id === resolvedOrderId) || null;
+      }
+      if (!order && customerData.orders) {
+        order = customerData.orders.find(o => o.id === resolvedOrderId) || null;
+      }
+      if (order) {
+        resolvedItem = pickItemFromOrder(order);
+      }
+    }
+
+    if ((!order || !resolvedItem) && (productId || imageUrl)) {
+      const deliveredOrders = Array.isArray(customerData.deliveredOrders) ? customerData.deliveredOrders : [];
+      for (const o of deliveredOrders) {
+        const matched = (Array.isArray(o.items) ? o.items : []).find(matchesItem);
+        if (matched) {
+          resolvedOrderId = o.id;
+          order = o;
+          resolvedItem = matched;
+          break;
+        }
+      }
+    }
+
+    if ((!order || !resolvedItem) && (productId || imageUrl)) {
+      const orders = Array.isArray(customerData.orders) ? customerData.orders : [];
+      for (const o of orders) {
+        const matched = (Array.isArray(o.items) ? o.items : []).find(matchesItem);
+        if (matched) {
+          resolvedOrderId = o.id;
+          order = o;
+          resolvedItem = matched;
+          break;
+        }
+      }
+    }
+
+    let productName = bodyProductName || 'Unknown Product';
+    let originalProductImageUrl = imageUrl || '';
+    const resolvedProductId = itemProductId(resolvedItem) || productId || '';
+
+    if (resolvedItem) {
+      productName = itemProductName(resolvedItem) || productName;
+      originalProductImageUrl = itemImageUrl(resolvedItem) || originalProductImageUrl;
+    }
+
+    // Keep backwards-compatible orderId variable for downstream but ensure it's correct
+    orderId = resolvedOrderId || orderId;
+    productId = resolvedProductId;
+
+    console.log('📦 Product Name:', productName);
+    console.log('🖼️ Original Product Image URL:', originalProductImageUrl);
+
+    // Analyze image with Gemini AI for expiry date OCR
+    const uploadedImagePath = req.file.path;
+    const expiryResult = await extractExpiryDateWithGemini(uploadedImagePath, productName);
+
+    console.log('✅ Expiry OCR complete:', expiryResult);
+
+    // Generate uploaded image URL
+    const uploadedImageUrl = `${BASE_URL}/uploads/${req.file.filename}`;
+
+    // ✅ CHECK IF PRODUCT IS EXPIRED
+    if (expiryResult.isExpired) {
+      console.log('⚠️ Product IS EXPIRED - storing in session (will save to Firestore when user confirms)');
+      
+      // Store expiry result in session temporarily (save to Firestore only when user clicks "Return to Chat")
+      const issueId = `EXPIRY_${orderId}_${Date.now()}`;
+      if (!userSessions.has(cleanEmail)) {
+        userSessions.set(cleanEmail, {});
+      }
+      const session = userSessions.get(cleanEmail);
+      session.pendingExpiryVerification = {
+        issueId: issueId,
+        type: 'expiry_verification',
+        customerEmail: cleanEmail,
+        orderId: orderId,
+        productName: productName,
+        productId: productId || '',
+        originalProductImageUrl: originalProductImageUrl,
+        amount: order?.totalAmount || 0,
+        issueType: 'Expired product',
+        expiryVerification: {
+          isExpired: true,
+          expiryDate: expiryResult.expiryDate,
+          currentDate: expiryResult.currentDate,
+          confidence: expiryResult.confidence,
+          extractedText: expiryResult.extractedText,
+          uploadedExpiryImageUrl: uploadedImageUrl
+        },
+        status: 'Verified - Expired',
+        priority: 'High',
+        resolution: 'Product expired - Eligible for refund',
+        timestamp: Date.now()
+      };
+      
+      console.log('💾 Stored pending expiry verification in session');
+      console.log('✅ Issue Type included:', session.pendingExpiryVerification.issueType);
+      
+      return res.json({
+        success: true,
+        isExpired: true,
+        expiryDate: expiryResult.expiryDate,
+        currentDate: expiryResult.currentDate,
+        confidence: expiryResult.confidence,
+        message: 'Product is expired. Click "Return to Chat" to proceed with product verification.',
+        showReturnButton: true
+      });
+    }
+
+    // ❌ PRODUCT IS NOT EXPIRED - Return error message
+    console.log('✅ Product is NOT expired - returning error to user');
+    
+    return res.json({
+      success: false,
+      isExpired: false,
+      expiryDate: expiryResult.expiryDate,
+      currentDate: expiryResult.currentDate,
+      confidence: expiryResult.confidence,
+      message: 'Oops! The product is not expired yet. Expiry date: ' + expiryResult.expiryDate,
+      showContactSupport: true
+    });
+
+  } catch (error) {
+    console.error('❌ Expiry verification error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message 
+    });
+  }
+});
+
 // 📸 IMAGE UPLOAD & VERIFICATION ENDPOINT
 app.post('/api/upload-verify-image', upload.single('image'), async (req, res) => {
   try {
@@ -5360,30 +6332,79 @@ app.post('/api/upload-verify-image', upload.single('image'), async (req, res) =>
       });
     }
 
-    let { email, orderId, productId, imageUrl } = req.body;
+    let { email, orderId, productId, imageUrl, productName } = req.body;
     
     console.log('📧 Raw email from body:', email);
     console.log('📦 Raw orderId from body:', orderId);
     console.log('🆔 Raw productId from body:', productId);
     console.log('🖼️ Raw imageUrl from body:', imageUrl);
     
+    // Fix corrupted email - extract the actual email if it's malformed
+    let cleanEmail = email;
+    
+    // If orderId or productId are missing, try to retrieve from session
+    if (email && (!orderId || !productId)) {
+      console.log('🔧 Missing orderId/productId, checking session storage...');
+      const session = productUploadSessions.get(email);
+      if (session) {
+        orderId = orderId || session.orderId;
+        productId = productId || session.productId;
+        imageUrl = imageUrl || session.imageUrl;
+        productName = productName || session.productName;
+        console.log('✅ Retrieved from session:');
+        console.log('  📦 Order ID:', orderId);
+        console.log('  🆔 Product ID:', productId);
+        console.log('  🖼️ Image URL:', imageUrl);
+        console.log('  📦 Product Name:', productName);
+      } else {
+        console.log('⚠️ No session found for email:', email);
+      }
+    }
+    if (email && email.includes('3A2F')) {
+      // Email is corrupted with URL encoding mixed in
+      const emailPrefix = email.split('3A2F')[0];
+      console.log('⚠️ Email appears corrupted, extracted prefix:', emailPrefix);
+      
+      // Reconstruct email by adding @gmail.com
+      cleanEmail = emailPrefix + '@gmail.com';
+      console.log('🔧 Reconstructed email:', cleanEmail);
+    }
+    
     // Validate email
-    if (!email || email === 'Not provided' || email === 'Not' || email.length < 3) {
-      console.error('⚠️ Invalid email provided:', email);
+    if (!cleanEmail || cleanEmail === 'Not provided' || cleanEmail === 'Not' || cleanEmail.length < 3) {
+      console.error('⚠️ Invalid email provided:', cleanEmail);
       return res.status(400).json({ 
         success: false, 
         error: 'Valid customer email is required. Please use the upload link from the chat.'
       });
     }
 
-    console.log('📧 Customer email:', email);
+    console.log('📧 Customer email:', cleanEmail);
     console.log('📦 Order ID:', orderId);
     console.log('🆔 Product ID:', productId);
     console.log('🖼️ Product Image URL:', imageUrl);
     console.log('📁 Uploaded file:', req.file.filename);
 
-    // Get customer data
-    const customerData = await getCustomerData(email);
+    // Get customer data - try with cleaned email first, then search by order ID
+    let customerData = await getCustomerData(cleanEmail);
+    
+    // If not found and email looks corrupted, try to find by searching all customers
+    if (!customerData && email.includes('3A2F')) {
+      console.log('🔍 Email corrupted, searching for customer by order ID:', orderId);
+      // Query all customers and find by order ID
+      const customersSnapshot = await db.collection('customers').get();
+      for (const doc of customersSnapshot.docs) {
+        const data = doc.data();
+        const allOrders = [...(data.orders || []), ...(data.deliveredOrders || [])];
+        if (allOrders.some(o => o.id === orderId)) {
+          customerData = data;
+          cleanEmail = data.email;
+          console.log('✅ Found customer by order ID:', cleanEmail);
+          break;
+        }
+      }
+    }
+    
     if (!customerData) {
       return res.status(404).json({ 
         success: false, 
@@ -5391,97 +6412,102 @@ app.post('/api/upload-verify-image', upload.single('image'), async (req, res) =>
       });
     }
 
-    // Find the product image URL from customer's delivered orders first, then regular orders
-    let productImageUrl = imageUrl || null; // Use imageUrl from URL params if provided
-    let productName = 'Unknown Product';
-    let foundInDelivered = false;
-    
-    if (productImageUrl) {
-      console.log('✅ Using product image URL from request parameters');
-      console.log('🔗 Image URL:', productImageUrl);
-    } else {
-      console.log('🔍 Searching for product in delivered orders...');
-    }
-    
-    // Priority 1: Search in delivered orders collection (if imageUrl not provided)
-    if (!productImageUrl && orderId && customerData.deliveredOrders && customerData.deliveredOrders.length > 0) {
-      console.log(`  - Searching in ${customerData.deliveredOrders.length} delivered orders`);
-      const deliveredOrder = customerData.deliveredOrders.find(o => o.id === orderId);
-      if (deliveredOrder) {
-        console.log(`  - Found order ${orderId} in delivered collection`);
-        console.log(`  - Order items:`, deliveredOrder.items);
-        
-        if (deliveredOrder.items && deliveredOrder.items.length > 0) {
-          const item = deliveredOrder.items[0];
-          console.log(`  - Item 0 data:`, JSON.stringify(item, null, 2));
-          
-          // Try different field names for image URL
-          productImageUrl = item.imageUrl || item.imageurl || item.image_url || item.productImage;
-          productName = item.productName || item.productname || item.name;
-          
-          // Try to get product_id if available
-          const productId = item.productId || item.product_id || item.id;
-          
-          foundInDelivered = true;
-          console.log(`✅ Found product in delivered orders: ${productName}`);
-          console.log(`📦 Order ID: ${orderId}`);
-          console.log(`🆔 Product ID: ${productId}`);
-          console.log(`🔗 Image URL: ${productImageUrl}`);
-        } else {
-          console.log(`  ⚠️ No items found in delivered order`);
-        }
-      } else {
-        console.log(`  ⚠️ Order ${orderId} not found in delivered collection`);
+    const normalize = (v) => (v || '').toString().trim().toLowerCase();
+    const itemProductId = (it) => it?.productId || it?.product_id || it?.id || null;
+    const itemProductName = (it) => it?.productName || it?.productname || it?.name || null;
+    const itemImageUrl = (it) => it?.imageUrl || it?.imageurl || it?.image_url || it?.productImage || null;
+
+    let resolvedOrderId = orderId || null;
+    let resolvedOrder = null;
+    let resolvedItem = null;
+
+    const matchesItem = (it) => {
+      if (!it) return false;
+      if (productId && normalize(itemProductId(it)) === normalize(productId)) return true;
+      if (productId && normalize(it?.productId) === normalize(productId)) return true;
+      if (imageUrl && normalize(itemImageUrl(it)) === normalize(imageUrl)) return true;
+      if (productName && normalize(itemProductName(it)) === normalize(productName)) return true;
+      return false;
+    };
+
+    const tryResolveFromOrder = (order) => {
+      if (!order || !Array.isArray(order.items) || order.items.length === 0) return null;
+      if (productId || productName) {
+        const matched = order.items.find(matchesItem);
+        if (matched) return matched;
       }
-    }
-    
-    // Priority 2: Search in regular orders if not found in delivered
-    if (!productImageUrl && orderId) {
-      const order = customerData.orders.find(o => o.id === orderId);
-      if (order && order.items && order.items.length > 0) {
-        const item = order.items[0];
-        productImageUrl = item.imageUrl;
-        productName = item.productName;
-        console.log(`✅ Found product in regular orders: ${productName}`);
+      return order.items[0];
+    };
+
+    if (resolvedOrderId) {
+      if (customerData.deliveredOrders && Array.isArray(customerData.deliveredOrders)) {
+        resolvedOrder = customerData.deliveredOrders.find(o => o.id === resolvedOrderId) || null;
       }
-    } else if (!productImageUrl && productId) {
-      // Search in cart items or favorites
-      const cartItem = customerData.cartItems?.find(item => item.productId === productId);
-      if (cartItem) {
-        productImageUrl = cartItem.imageUrl;
-        productName = cartItem.productName;
+      if (!resolvedOrder && customerData.orders && Array.isArray(customerData.orders)) {
+        resolvedOrder = customerData.orders.find(o => o.id === resolvedOrderId) || null;
+      }
+      if (resolvedOrder) {
+        resolvedItem = tryResolveFromOrder(resolvedOrder);
       }
     }
 
-    // Fallback: Use first delivered order's product image
-    if (!productImageUrl && customerData.deliveredOrders && customerData.deliveredOrders.length > 0) {
-      const firstDeliveredOrder = customerData.deliveredOrders[0];
-      if (firstDeliveredOrder.items && firstDeliveredOrder.items.length > 0) {
-        productImageUrl = firstDeliveredOrder.items[0].imageUrl;
-        productName = firstDeliveredOrder.items[0].productName;
-        foundInDelivered = true;
-        console.log(`✅ Using first delivered order product: ${productName}`);
+    if ((!resolvedOrder || !resolvedItem) && (productId || productName || imageUrl)) {
+      console.log('🔍 orderId not usable - searching by product in delivered orders...');
+      const deliveredOrders = Array.isArray(customerData.deliveredOrders) ? customerData.deliveredOrders : [];
+      for (const o of deliveredOrders) {
+        const matched = (Array.isArray(o.items) ? o.items : []).find(matchesItem);
+        if (matched) {
+          resolvedOrderId = o.id;
+          resolvedOrder = o;
+          resolvedItem = matched;
+          break;
+        }
       }
     }
-    
-    // Final fallback: Use first order's product image
-    if (!productImageUrl && customerData.orders && customerData.orders.length > 0) {
-      const firstOrder = customerData.orders[0];
-      if (firstOrder.items && firstOrder.items.length > 0) {
-        productImageUrl = firstOrder.items[0].imageUrl;
-        productName = firstOrder.items[0].productName;
+
+    if ((!resolvedOrder || !resolvedItem) && (productId || productName || imageUrl)) {
+      console.log('🔍 Still not found - searching by product in regular orders...');
+      const orders = Array.isArray(customerData.orders) ? customerData.orders : [];
+      for (const o of orders) {
+        const matched = (Array.isArray(o.items) ? o.items : []).find(matchesItem);
+        if (matched) {
+          resolvedOrderId = o.id;
+          resolvedOrder = o;
+          resolvedItem = matched;
+          break;
+        }
       }
+    }
+
+    let productImageUrl = imageUrl || null;
+    productName = productName || 'Unknown Product';
+    const resolvedProductId = itemProductId(resolvedItem) || productId || null;
+
+    if (!productImageUrl && resolvedItem) {
+      productImageUrl = itemImageUrl(resolvedItem);
+    }
+    if (resolvedItem) {
+      productName = itemProductName(resolvedItem) || productName;
     }
 
     if (!productImageUrl) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Product image URL not found. Please provide orderId or productId.' 
+      return res.status(400).json({
+        success: false,
+        error: 'Product image URL not found. Please provide a valid orderId/productId or ensure the order item has an imageUrl.'
       });
     }
 
-    console.log('🔗 Product Image URL:', productImageUrl);
+    if (!resolvedOrderId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Order not resolved. Please provide a valid orderId or productId/productName.'
+      });
+    }
+
+    console.log('📦 Resolved Order ID:', resolvedOrderId);
+    console.log('🆔 Resolved Product ID:', resolvedProductId);
     console.log('📦 Product Name:', productName);
+    console.log('🔗 Product Image URL:', productImageUrl);
 
     // Analyze image with Hugging Face AI
     const uploadedImagePath = req.file.path;
@@ -5511,13 +6537,13 @@ app.post('/api/upload-verify-image', upload.single('image'), async (req, res) =>
     // ✅ PRODUCT MATCHES - SAVE TO ISSUES TABLE IN FIRESTORE
     try {
       // Get order details for the issue
-      let order = null;
-      if (orderId) {
+      let order = resolvedOrder;
+      if (!order && resolvedOrderId) {
         if (customerData.deliveredOrders) {
-          order = customerData.deliveredOrders.find(o => o.id === orderId);
+          order = customerData.deliveredOrders.find(o => o.id === resolvedOrderId);
         }
         if (!order && customerData.orders) {
-          order = customerData.orders.find(o => o.id === orderId);
+          order = customerData.orders.find(o => o.id === resolvedOrderId);
         }
       }
 
@@ -5526,43 +6552,94 @@ app.post('/api/upload-verify-image', upload.single('image'), async (req, res) =>
       const damageAccuracy = analysisResult.damageDetected ? 
         (analysisResult.damageConfidence || 85) : 0;
 
-      // Create issue record (simplified - no undefined fields)
-      const issueData = {
-        id: `RETURN_${Date.now()}`,
-        customerEmail: email,
-        orderId: orderId || 'N/A',
-        productName: productName,
-        amount: order?.totalAmount || 0,
-        issueType: 'Order Return - Image Verification',
-        description: `Customer uploaded product image for return verification. Product match: YES, Damage: ${analysisResult.damageDetected ? 'YES' : 'NO'}`,
-        status: 'Pending Review',
-        returnReason: 'Image verification completed',
-        productAccuracy: productAccuracy,
-        damageAccuracy: damageAccuracy,
-        imageVerification: {
-          uploadedImageUrl: `${BASE_URL}/uploads/${req.file.filename}`,
-          productImageUrl: productImageUrl,
-          isMatch: analysisResult.isMatch,
-          damageDetected: analysisResult.damageDetected,
-          confidence: analysisResult.confidence
-        },
-        resolution: analysisResult.damageDetected
-          ? 'Damage detected. Requires agent review.'
-          : 'Image verified successfully. Awaiting agent approval.',
-        returnReference: `RET_${orderId}_${Date.now()}`,
-        paymentMethod: order?.paymentMethod || 'N/A',
-        source: 'salesiq_image_verification',
-        createdAt: new Date().toISOString()
-      };
+      // 🔍 CHECK IF THIS IS FROM EXPIRY VERIFICATION FLOW
+      console.log('🔍 Checking if this is from expiry verification flow...');
+      const expiryIssuesSnapshot = await db.collection('issues')
+        .where('type', '==', 'expiry_verification')
+        .where('orderId', '==', resolvedOrderId)
+        .orderBy('createdAt', 'desc')
+        .limit(1)
+        .get();
+      
+      let issueData;
+      let isExpiryFlow = false;
+      let expiryDocId = null;
+      
+      if (!expiryIssuesSnapshot.empty) {
+        // This is from expiry verification - STORE in session (will update Firestore when user clicks Return to Chat)
+        const expiryDoc = expiryIssuesSnapshot.docs[0];
+        const expiryData = expiryDoc.data();
+        expiryDocId = expiryDoc.id; // Get the actual Firestore document ID
+        isExpiryFlow = true;
+        
+        console.log('✅ Found existing expiry verification:', expiryData.id);
+        console.log('📄 Firestore document ID:', expiryDocId);
+        console.log('💾 Storing product verification in session (will save to Firestore when user clicks Return to Chat)');
+        
+        // Prepare the update data but DON'T save to Firestore yet
+        issueData = {
+          ...expiryData,
+          firestoreDocId: expiryDocId, // Store the actual Firestore document ID
+          productVerification: {
+            uploadedProductImageUrl: `${BASE_URL}/uploads/${req.file.filename}`,
+            originalProductImageUrl: productImageUrl,
+            isMatch: analysisResult.isMatch,
+            damageDetected: analysisResult.damageDetected,
+            confidence: analysisResult.confidence,
+            productAccuracy: productAccuracy,
+            damageAccuracy: damageAccuracy
+          },
+          status: 'Verified - Product Matched',
+          resolution: analysisResult.damageDetected
+            ? 'Product expired and damaged. Eligible for full refund.'
+            : 'Product expired but no damage. Eligible for refund.'
+        };
+        
+        console.log('✅ Product verification stored in session, waiting for user confirmation');
+      } else {
+        // Regular product verification (not from expiry flow) - STORE in session
+        console.log('📝 No expiry verification found - storing new product verification in session');
+        
+        issueData = {
+          id: `RETURN_${Date.now()}`,
+          type: 'product_verification',
+          customerEmail: cleanEmail,
+          orderId: resolvedOrderId || 'N/A',
+          productName: productName,
+          amount: order?.totalAmount || 0,
+          issueType: 'Order Return - Image Verification',
+          description: `Customer uploaded product image for return verification. Product match: YES, Damage: ${analysisResult.damageDetected ? 'YES' : 'NO'}`,
+          status: 'Pending Review',
+          returnReason: 'Image verification completed',
+          productAccuracy: productAccuracy,
+          damageAccuracy: damageAccuracy,
+          imageVerification: {
+            uploadedImageUrl: `${BASE_URL}/uploads/${req.file.filename}`,
+            productImageUrl: productImageUrl,
+            isMatch: analysisResult.isMatch,
+            damageDetected: analysisResult.damageDetected,
+            confidence: analysisResult.confidence
+          },
+          resolution: analysisResult.damageDetected
+            ? 'Damage detected. Requires agent review.'
+            : 'Image verified successfully. Awaiting agent approval.',
+          returnReference: `RET_${orderId}_${Date.now()}`,
+          paymentMethod: order?.paymentMethod || 'N/A',
+          source: 'salesiq_image_verification'
+        };
 
-      await saveIssueToFirestore(issueData);
-      console.log('✅ Issue saved to Firestore:', issueData.id);
-
-      // Store verification result in user session
-      if (!userSessions.has(email)) {
-        userSessions.set(email, {});
+        console.log('✅ Product verification stored in session, waiting for user confirmation');
       }
-      const session = userSessions.get(email);
+
+      // Store verification result in user session (use cleanEmail)
+      if (!userSessions.has(cleanEmail)) {
+        userSessions.set(cleanEmail, {});
+      }
+      const session = userSessions.get(cleanEmail);
+      
+      // Store pending product verification (will save to Firestore when user confirms)
+      session.pendingProductVerification = issueData;
+      
       session.verificationResult = {
         orderId: orderId,
         productName: productName,
@@ -5572,10 +6649,14 @@ app.post('/api/upload-verify-image', upload.single('image'), async (req, res) =>
         isMatch: analysisResult.isMatch,
         damageDetected: analysisResult.damageDetected,
         issueId: issueData.id,
+        isExpiryFlow: isExpiryFlow,
         timestamp: Date.now()
       };
 
-      console.log('✅ Verification result stored in session for:', email);
+      console.log('✅ Verification result stored in session for:', cleanEmail);
+      console.log('  Issue ID:', issueData.id);
+      console.log('  Is Expiry Flow:', isExpiryFlow);
+      console.log('💾 Pending product verification stored, waiting for user to click Return to Chat');
       
       // 🎯 AUTO-TRIGGER: Set flag to display results on next webhook call
       session.autoDisplayVerification = true;
@@ -5789,6 +6870,241 @@ app.get('/api/verification-status/:email', (req, res) => {
   } catch (error) {
     console.error('Error checking verification status:', error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// 🔑 API endpoint to retrieve expiry upload session data
+app.get('/api/get-expiry-session', (req, res) => {
+  try {
+    let email = req.query.email;
+    
+    if (!email) {
+      return res.status(400).json({ success: false, error: 'Email parameter required' });
+    }
+    
+    console.log('🔍 Retrieving expiry session for:', email);
+    
+    // Fix mangled email - extract actual email if it contains encoded URL parts
+    // Example: "arjunfree2563A2Fimg.clevup.in..." -> "arjunfree256@gmail.com"
+    if (email.includes('3A2F') || email.includes('2F')) {
+      const emailPrefix = email.split('3A2F')[0].split('2F')[0];
+      if (emailPrefix && !emailPrefix.includes('@')) {
+        email = emailPrefix + '@gmail.com';
+        console.log('🔧 Extracted email from mangled parameter:', email);
+      }
+    }
+    
+    const session = expiryUploadSessions.get(email);
+    
+    if (!session) {
+      console.log('⚠️ No session found for:', email);
+      return res.json({ success: false, error: 'No session found' });
+    }
+    
+    // Check if session is still valid (within 30 minutes)
+    const isValid = (Date.now() - session.timestamp) < 30 * 60 * 1000;
+    
+    if (!isValid) {
+      console.log('⚠️ Session expired for:', email);
+      expiryUploadSessions.delete(email);
+      return res.json({ success: false, error: 'Session expired' });
+    }
+    
+    console.log('✅ Session found:', session);
+    
+    return res.json({
+      success: true,
+      orderId: session.orderId,
+      productId: session.productId,
+      imageUrl: session.imageUrl,
+      productName: session.productName
+    });
+  } catch (error) {
+    console.error('❌ Error retrieving session:', error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// 🔑 API endpoint to retrieve product upload session data
+app.get('/api/get-product-session', (req, res) => {
+  try {
+    let email = req.query.email;
+    
+    if (!email) {
+      return res.status(400).json({ success: false, error: 'Email parameter required' });
+    }
+    
+    console.log('🔍 Retrieving product session for:', email);
+    
+    // Fix mangled email - extract actual email if it contains encoded URL parts
+    // Example: "arjunfree2563A2Fimg.clevup.in..." -> "arjunfree256@gmail.com"
+    if (email.includes('3A2F') || email.includes('2F')) {
+      const emailPrefix = email.split('3A2F')[0].split('2F')[0];
+      if (emailPrefix && !emailPrefix.includes('@')) {
+        email = emailPrefix + '@gmail.com';
+        console.log('🔧 Extracted email from mangled parameter:', email);
+      }
+    }
+    
+    const session = productUploadSessions.get(email);
+    
+    if (!session) {
+      console.log('⚠️ No session found for:', email);
+      return res.json({ success: false, error: 'No session found' });
+    }
+    
+    // Check if session is still valid (within 30 minutes)
+    const isValid = (Date.now() - session.timestamp) < 30 * 60 * 1000;
+    
+    if (!isValid) {
+      console.log('⚠️ Session expired for:', email);
+      productUploadSessions.delete(email);
+      return res.json({ success: false, error: 'Session expired' });
+    }
+    
+    console.log('✅ Session found:', session);
+    
+    return res.json({
+      success: true,
+      orderId: session.orderId,
+      productId: session.productId,
+      imageUrl: session.imageUrl,
+      productName: session.productName
+    });
+  } catch (error) {
+    console.error('❌ Error retrieving session:', error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// API endpoint to get customer data by order ID
+app.get('/api/get-order-customer', async (req, res) => {
+  try {
+    const { orderId } = req.query;
+    
+    if (!orderId) {
+      return res.status(400).json({
+        success: false,
+        error: 'orderId is required'
+      });
+    }
+    
+    console.log('🔍 Fetching customer data for order:', orderId);
+    
+    // Query all customers to find the one with this order
+    const customersSnapshot = await db.collection('customers').get();
+    
+    for (const doc of customersSnapshot.docs) {
+      const customerData = doc.data();
+      const allOrders = [...(customerData.orders || []), ...(customerData.deliveredOrders || [])];
+      
+      const order = allOrders.find(o => o.id === orderId);
+      if (order) {
+        console.log('✅ Found customer:', customerData.email);
+        return res.status(200).json({
+          success: true,
+          customerName: customerData.name || customerData.customerName || 'Customer',
+          customerEmail: customerData.email || 'N/A',
+          customerPhone: customerData.phone || customerData.phoneNumber || ''
+        });
+      }
+    }
+    
+    // If not found in customers collection, try users collection
+    const usersSnapshot = await db.collection('users').get();
+    
+    for (const userDoc of usersSnapshot.docs) {
+      const userData = userDoc.data();
+      
+      // Check orders subcollection
+      const ordersSnapshot = await db.collection('users')
+        .doc(userDoc.id)
+        .collection('orders')
+        .where('__name__', '==', orderId)
+        .limit(1)
+        .get();
+      
+      if (!ordersSnapshot.empty) {
+        console.log('✅ Found customer in users:', userData.email);
+        return res.status(200).json({
+          success: true,
+          customerName: userData.name || 'Customer',
+          customerEmail: userData.email || 'N/A',
+          customerPhone: userData.phone || ''
+        });
+      }
+      
+      // Check delivered subcollection
+      const deliveredSnapshot = await db.collection('users')
+        .doc(userDoc.id)
+        .collection('delivered')
+        .where('__name__', '==', orderId)
+        .limit(1)
+        .get();
+      
+      if (!deliveredSnapshot.empty) {
+        console.log('✅ Found customer in users/delivered:', userData.email);
+        return res.status(200).json({
+          success: true,
+          customerName: userData.name || 'Customer',
+          customerEmail: userData.email || 'N/A',
+          customerPhone: userData.phone || ''
+        });
+      }
+    }
+    
+    console.log('⚠️ Customer not found for order:', orderId);
+    return res.status(404).json({
+      success: false,
+      error: 'Customer not found for this order'
+    });
+    
+  } catch (error) {
+    console.error('❌ Error fetching customer data:', error);
+    return res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// API endpoint to save payment URL from Deluge script
+app.post('/api/save-payment-url', async (req, res) => {
+  try {
+    console.log('\n💳 ===== SAVE PAYMENT URL REQUEST =====');
+    const { issueId, paymentUrl } = req.body;
+    
+    console.log('Issue ID:', issueId);
+    console.log('Payment URL:', paymentUrl);
+    
+    if (!issueId || !paymentUrl) {
+      return res.status(400).json({
+        success: false,
+        error: 'issueId and paymentUrl are required'
+      });
+    }
+    
+    // Save to Firestore
+    console.log('💾 Saving payment URL to Firestore...');
+    await db.collection('issues').doc(issueId).update({
+      paymentUrl: paymentUrl,
+      paymentGenerated: true,
+      paymentGeneratedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+    
+    console.log('✅ Payment URL saved successfully');
+    
+    return res.status(200).json({
+      success: true,
+      message: 'Payment URL saved to Firestore'
+    });
+  } catch (error) {
+    console.error('❌ Error saving payment URL:', error);
+    return res.status(500).json({
+      success: false,
+      error: error.message
+    });
   }
 });
 
