@@ -3656,7 +3656,6 @@ app.post('/webhook', async (req, res) => {
             'other': 'Other reason'
           };
           const reasonDisplayName = reasonDisplayMap[reasonCode] || reasonCode;
-          
           await saveIssueToFirestore({
             id: `RETURN_${Date.now()}`,
             customerEmail: visitorEmail,
@@ -4020,10 +4019,17 @@ app.post('/webhook', async (req, res) => {
             const selectedButton = messageText.trim();
             let orderIndex = -1;
             
+            console.log('\n🔍 DEBUG: Matching order button...');
+            console.log('  Selected Button:', selectedButton);
+            console.log('  Session Orders Count:', session.orders.length);
+            
             for (let i = 0; i < session.orders.length; i++) {
               const order = session.orders[i];
               const productName = order.items?.[0]?.productName || order.items?.[0]?.name || 'Product';
               const buttonText = `${productName} - ₹${order.totalAmount}`;
+              
+              console.log(`  Order ${i}: "${buttonText}" (Product: ${productName}, Amount: ${order.totalAmount})`);
+              console.log(`    Match? ${buttonText === selectedButton}`);
               
               if (buttonText === selectedButton) {
                 orderIndex = i;
@@ -4032,6 +4038,9 @@ app.post('/webhook', async (req, res) => {
             }
             
             if (orderIndex === -1) {
+              console.log('❌ No matching order found!');
+              console.log('  Expected format: "Product Name - ₹Amount"');
+              console.log('  Received:', selectedButton);
               return res.status(200).json({
                 action: "reply",
                 replies: [{ text: "Invalid selection. Please try again." }],
