@@ -18,7 +18,7 @@ class SalesIQButtonHandler {
   Timer? _debounceTimer;
   
   // Webhook configuration
-  static const String _webhookUrl = 'https://nonchivalrous-paranoidly-cara.ngrok-free.dev'; // Update with your webhook URL
+  static const String _webhookUrl = 'https://2fd10a7156a6.ngrok-free.app'; // Update with your webhook URL
   
   String? _currentCustomerEmail;
   String? _currentChatId;

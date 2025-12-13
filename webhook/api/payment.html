@@ -332,9 +332,33 @@
         const status = urlParams.get('status');
         const razorpayOrderId = urlParams.get('razorpay_order_id');
         const razorpayKey = urlParams.get('key');
-        const customerName = urlParams.get('name');
-        const customerEmail = urlParams.get('email');
-        const customerPhone = urlParams.get('phone');
+        let customerName = urlParams.get('name');
+        let customerEmail = urlParams.get('email');
+        let customerPhone = urlParams.get('phone');
+
+        const BASE_URL = 'https://nonchivalrous-paranoidly-cara.ngrok-free.dev';
+
+        // Fetch customer data from order
+        async function loadCustomerData() {
+            try {
+                if (orderId) {
+                    const response = await fetch(`${BASE_URL}/api/get-order-customer?orderId=${orderId}`);
+                    const data = await response.json();
+                    
+                    if (data.success) {
+                        customerName = data.customerName || customerName;
+                        customerEmail = data.customerEmail || customerEmail;
+                        customerPhone = data.customerPhone || customerPhone;
+                        
+                        // Update display
+                        document.getElementById('customerName').textContent = customerName || 'Customer';
+                        document.getElementById('customerEmail').textContent = customerEmail || 'N/A';
+                    }
+                }
+            } catch (error) {
+                console.error('Failed to load customer data:', error);
+            }
+        }
 
         // Display order details
         document.getElementById('customerName').textContent = decodeURIComponent(customerName || 'Customer');
@@ -345,7 +369,8 @@
         document.getElementById('amount').textContent = 'Rs. ' + (amount || '0');
         document.getElementById('payAmount').textContent = amount || '0';
 
-        const BASE_URL = 'https://nonchivalrous-paranoidly-cara.ngrok-free.dev';
+        // Load customer data on page load
+        loadCustomerData();
 
         async function initiatePayment() {
             if (!orderId || !amount) {
@@ -455,12 +480,9 @@
 
                 if (data.success) {
                     // Update status to Paid
-                    const statusElement = document.querySelector('.detail-row:nth-child(3) .detail-value');
-                    if (statusElement) {
-                        statusElement.textContent = 'Paid';
-                        statusElement.style.color = '#10b981';
-                        statusElement.style.fontWeight = 'bold';
-                    }
+                    document.getElementById('orderStatus').textContent = 'Paid';
+                    document.getElementById('orderStatus').style.color = '#10b981';
+                    document.getElementById('orderStatus').style.fontWeight = 'bold';
                     
                     showStatus('success', '✅ Payment successful! Downloading receipt...');
                     
