@@ -12,233 +12,232 @@
         }
 
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+            background: #0a0a0a;
             min-height: 100vh;
+            padding: 24px 12px;
             display: flex;
             justify-content: center;
-            align-items: center;
-            padding: 20px;
+            align-items: flex-start;
         }
 
         .container {
-            background: white;
-            border-radius: 20px;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-            max-width: 600px;
+            background: #16213e;
+            border: 1px solid rgba(124, 58, 237, 0.3);
+            border-radius: 6px;
+            max-width: 640px;
             width: 100%;
-            padding: 40px;
+            padding: 24px;
         }
 
         h1 {
-            color: #333;
-            margin-bottom: 10px;
-            font-size: 28px;
-            text-align: center;
+            font-size: 16px;
+            font-weight: 600;
+            color: #e2e8f0;
+            margin-bottom: 4px;
         }
 
         .subtitle {
-            color: #666;
-            text-align: center;
-            margin-bottom: 30px;
-            font-size: 14px;
+            font-size: 12px;
+            color: #94a3b8;
+            margin-bottom: 16px;
         }
 
         .info-box {
-            background: #fff3e0;
-            border-left: 4px solid #ff9800;
-            padding: 15px;
-            margin-bottom: 25px;
-            border-radius: 5px;
+            background: rgba(26, 26, 46, 0.6);
+            border: 1px solid rgba(124, 58, 237, 0.2);
+            border-radius: 4px;
+            padding: 12px;
+            margin-bottom: 16px;
         }
 
         .info-box p {
-            margin: 5px 0;
-            font-size: 14px;
-            color: #555;
+            font-size: 12px;
+            color: #cbd5e1;
+            margin: 4px 0;
+            line-height: 1.5;
         }
 
         .info-box strong {
-            color: #333;
+            font-weight: 500;
+            color: #e2e8f0;
         }
 
-        .drop-zone {
-            border: 3px dashed #ccc;
-            border-radius: 15px;
-            padding: 60px 20px;
+        .camera-zone {
+            border: 1px dashed rgba(124, 58, 237, 0.4);
+            border-radius: 4px;
+            padding: 28px 12px;
             text-align: center;
+            background: rgba(16, 16, 30, 0.5);
             cursor: pointer;
-            transition: all 0.3s ease;
-            background: #fafafa;
-            margin-bottom: 20px;
-        }
-
-        .drop-zone.dragover {
-            border-color: #ff9800;
-            background: #fff8e1;
-            transform: scale(1.02);
-        }
-
-        .drop-zone.uploading {
-            border-color: #ffa500;
-            background: #fff8e1;
-        }
-
-        .drop-zone-icon {
-            font-size: 60px;
-            margin-bottom: 15px;
-        }
-
-        .drop-zone-text {
-            color: #666;
-            font-size: 16px;
             margin-bottom: 10px;
         }
 
-        .drop-zone-hint {
-            color: #999;
-            font-size: 13px;
+        .camera-zone-icon {
+            font-size: 24px;
+            margin-bottom: 6px;
         }
 
-        #fileInput {
-            display: none;
+        .camera-zone-text {
+            font-size: 13px;
+            font-weight: 500;
+            color: #e2e8f0;
+            margin-bottom: 2px;
+        }
+
+        .camera-zone-hint {
+            font-size: 12px;
+            color: #64748b;
         }
 
         .btn {
-            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
-            color: white;
-            border: none;
-            padding: 15px 30px;
-            border-radius: 10px;
-            font-size: 16px;
-            font-weight: 600;
+            background: #7c3aed;
+            color: #ffffff;
+            border: 1px solid #7c3aed;
+            padding: 8px 12px;
+            font-size: 12.5px;
+            font-weight: 500;
+            border-radius: 4px;
             cursor: pointer;
             width: 100%;
-            transition: transform 0.2s;
             margin-top: 10px;
         }
 
         .btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(245, 87, 108, 0.4);
+            background: #6d28d9;
         }
 
         .btn:disabled {
-            opacity: 0.6;
+            background: #475569;
+            border-color: #475569;
             cursor: not-allowed;
+            opacity: 0.7;
         }
 
         .preview-container {
-            margin: 20px 0;
+            margin-top: 12px;
             display: none;
         }
 
         .preview-image {
             width: 100%;
-            max-height: 300px;
+            max-height: 260px;
             object-fit: contain;
-            border-radius: 10px;
-            border: 2px solid #e0e0e0;
+            border: 1px solid rgba(124, 58, 237, 0.3);
+            border-radius: 4px;
+            background: rgba(10, 10, 10, 0.5);
+            padding: 8px;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 16px;
+            font-size: 12px;
+            color: #94a3b8;
+        }
+
+        .loading.active {
+            display: block;
+        }
+
+        .spinner {
+            width: 32px;
+            height: 32px;
+            border: 3px solid rgba(124, 58, 237, 0.2);
+            border-top: 3px solid #7c3aed;
+            border-radius: 50%;
+            margin: 0 auto 8px;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
         }
 
         .result-container {
-            margin-top: 25px;
-            padding: 20px;
-            border-radius: 10px;
+            margin-top: 16px;
+            padding: 12px;
+            border-radius: 4px;
+            font-size: 12px;
+            border-left: 3px solid;
             display: none;
         }
 
         .result-container.success {
-            background: #d4edda;
-            border: 2px solid #28a745;
+            background: rgba(16, 185, 129, 0.1);
+            border-left-color: #10b981;
+            color: #6ee7b7;
         }
 
         .result-container.error {
-            background: #f8d7da;
-            border: 2px solid #dc3545;
+            background: rgba(239, 68, 68, 0.1);
+            border-left-color: #ef4444;
+            color: #fca5a5;
         }
 
         .result-container.warning {
-            background: #fff3cd;
-            border: 2px solid #ffc107;
+            background: rgba(245, 158, 11, 0.1);
+            border-left-color: #f59e0b;
+            color: #fcd34d;
         }
 
         .result-title {
-            font-size: 20px;
-            font-weight: bold;
-            margin-bottom: 15px;
+            font-weight: 600;
+            margin-bottom: 8px;
+            font-size: 13px;
+            color: #e2e8f0;
         }
 
         .result-item {
-            margin: 10px 0;
-            padding: 10px;
-            background: rgba(255, 255, 255, 0.7);
-            border-radius: 5px;
+            margin: 4px 0;
+            line-height: 1.4;
         }
 
-        .result-item strong {
-            display: inline-block;
-            width: 150px;
-        }
-
-        .loading {
-            text-align: center;
-            padding: 20px;
-            display: none;
-        }
-
-        .spinner {
-            border: 4px solid #f3f3f3;
-            border-top: 4px solid #ff9800;
-            border-radius: 50%;
-            width: 50px;
-            height: 50px;
-            animation: spin 1s linear infinite;
-            margin: 0 auto 15px;
-        }
-
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
+        @media (max-width: 768px) {
+            body {
+                padding: 12px 8px;
+            }
+            
+            .container {
+                padding: 16px;
+            }
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>📅 Expiry Date Verification</h1>
-        <p class="subtitle">Upload product image showing expiry date for OCR verification</p>
+        <h1>Expiry Date Verification</h1>
+        <p class="subtitle">Capture expiry date for OCR verification</p>
 
         <div class="info-box">
-            <p><strong>📧 Email:</strong> <span id="customerEmail">Loading...</span></p>
-            <p><strong>📦 Order ID:</strong> <span id="orderId">Loading...</span></p>
-            <p><strong>🆔 Product ID:</strong> <span id="productIdDisplay">Loading...</span></p>
-            <p><strong>🤖 How it works:</strong> Upload → AI OCR → Date Extraction → Verification</p>
-            <p style="margin-top: 10px; color: #ff6f00;"><strong>⚠️ Important:</strong> Ensure expiry date is clearly visible in the image</p>
+            <p><strong>Email:</strong> <span id="customerEmail">Loading...</span></p>
+            <p><strong>Order ID:</strong> <span id="orderId">Loading...</span></p>
+            <p><strong>Product ID:</strong> <span id="productIdDisplay">Loading...</span></p>
         </div>
 
-        <button class="btn" id="cameraBtn" style="background: linear-gradient(135deg, #28a745 0%, #20c997 100%);">
-            📸 Take Photo with Camera
-        </button>
+        <div class="camera-zone" id="cameraZone" onclick="document.getElementById('cameraInput').click()">
+            <div class="camera-zone-icon">📷</div>
+            <div class="camera-zone-text">Capture expiry date</div>
+            <div class="camera-zone-hint">Clear image of expiry date</div>
+        </div>
 
-        <input type="file" id="cameraInput" accept="image/*" capture="environment" style="display: none;">
+        <input type="file" id="cameraInput" accept="image/*" capture="environment" style="display:none;" />
+
+        <button class="btn" id="cameraBtn" onclick="document.getElementById('cameraInput').click()">Open Camera</button>
 
         <div class="preview-container" id="previewContainer">
-            <h3 style="margin-bottom: 10px; color: #333;">Preview:</h3>
-            <img id="previewImage" class="preview-image" alt="Preview">
+            <img id="previewImage" class="preview-image" alt="Preview" />
         </div>
 
         <button class="btn" id="uploadBtn" disabled>Verify Expiry Date</button>
 
         <div class="loading" id="loading">
             <div class="spinner"></div>
-            <p>🤖 AI is extracting expiry date from image...</p>
-            <p style="font-size: 13px; color: #666; margin-top: 5px;">This may take a few seconds</p>
+            Extracting expiry date…
         </div>
 
-        <div class="result-container" id="resultContainer">
-            <div class="result-title" id="resultTitle"></div>
-            <div id="resultContent"></div>
-        </div>
+        <div class="result-container" id="resultContainer"></div>
     </div>
 
     <script>
@@ -454,10 +453,13 @@
                 loading.style.display = 'none';
 
                 if (result.success) {
-                    displayExpiredResult(result);
+                    // ✅ Update expiry_verify to TRUE on successful expiry verification
+                    console.log('✅ Expiry verification successful - expiry_verify = true');
+                    displayExpiredResult(result, true);
                 } else {
-                    // Product not expired
-                    displayNotExpiredError(result);
+                    // ❌ Product not expired - expiry_verify remains FALSE
+                    console.log('❌ Product not expired - expiry_verify = false');
+                    displayNotExpiredError(result, false);
                 }
             } catch (error) {
                 loading.style.display = 'none';
@@ -467,7 +469,16 @@
             uploadBtn.disabled = false;
         });
 
-        function displayExpiredResult(result) {
+        function displayExpiredResult(result, expiryVerified = false) {
+            // Store expiry_verify status in localStorage for persistence
+            if (expiryVerified && result.isExpired) {
+                localStorage.setItem('expiry_verify', 'true');
+                console.log('💾 expiry_verify saved to localStorage: true');
+            } else {
+                localStorage.setItem('expiry_verify', 'false');
+                console.log('💾 expiry_verify saved to localStorage: false');
+            }
+            
             resultContainer.style.display = 'block';
             resultContainer.className = 'result-container success';
             resultContainer.innerHTML = `
@@ -475,17 +486,18 @@
                 <div class="result-item"><strong>Expiry Date:</strong> ${result.expiryDate}</div>
                 <div class="result-item"><strong>Current Date:</strong> ${result.currentDate}</div>
                 <div class="result-item"><strong>Status:</strong> EXPIRED</div>
-                <div style="margin-top: 20px; padding: 15px; background: #e8f5e9; border-radius: 8px; text-align: center;">
-                    <strong>✅ ${result.message}</strong><br>
-                    <p style="margin: 10px 0;">Your return request has been accepted. The product has expired.</p>
-                    <button onclick="window.close()" style="margin-top: 15px; padding: 12px 30px; background: #4CAF50; color: white; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.2);">
-                        Return to Chat
-                    </button>
+                <div class="result-item"><strong>expiry_verify:</strong> TRUE ✅</div>
+                <div class="result-item" style="margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(16, 185, 129, 0.2);">
+                    <strong>Next Step:</strong> Return to chat and click "Check Expiry Results" button to proceed with product verification.
                 </div>
             `;
         }
 
-        function displayNotExpiredError(result) {
+        function displayNotExpiredError(result, expiryVerified = false) {
+            // ❌ Product not expired - keep expiry_verify as FALSE
+            localStorage.setItem('expiry_verify', 'false');
+            console.log('💾 expiry_verify saved to localStorage: false (not expired)');
+            
             resultContainer.style.display = 'block';
             resultContainer.className = 'result-container error';
             resultContainer.innerHTML = `
@@ -493,25 +505,27 @@
                 <div class="result-item"><strong>Expiry Date:</strong> ${result.expiryDate}</div>
                 <div class="result-item"><strong>Current Date:</strong> ${result.currentDate}</div>
                 <div class="result-item"><strong>Status:</strong> NOT EXPIRED</div>
-                <div style="margin-top: 20px; padding: 15px; background: #ffebee; border-radius: 8px; text-align: center;">
-                    <strong>❌ ${result.message}</strong><br>
-                    <p style="margin: 10px 0;">The product has not expired yet. Please contact support for assistance.</p>
-                    <button onclick="window.close()" style="margin-top: 15px; padding: 12px 30px; background: #f44336; color: white; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.2);">
-                        Return to Chat
-                    </button>
+                <div class="result-item"><strong>expiry_verify:</strong> FALSE ❌</div>
+                <div class="result-item" style="margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(239, 68, 68, 0.2);">
+                    <strong>Note:</strong> The product has not expired yet. Please contact support for assistance.
                 </div>
             `;
         }
 
         function displayError(errorMessage) {
+            // ❌ Error occurred - keep expiry_verify as FALSE
+            localStorage.setItem('expiry_verify', 'false');
+            console.log('💾 expiry_verify saved to localStorage: false (error)');
+            
             resultContainer.style.display = 'block';
             resultContainer.className = 'result-container error';
             resultContainer.innerHTML = `
                 <div class="result-title">❌ Error</div>
-                <div class="result-item">${errorMessage}</div>
-                <button onclick="location.reload()" style="margin-top: 15px; padding: 12px 24px; background: #FF9800; color: white; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.2);">
-                    Try Again
-                </button>
+                <div class="result-item"><strong>expiry_verify:</strong> FALSE ❌</div>
+                <div class="result-item" style="margin-top: 8px;">${errorMessage}</div>
+                <div class="result-item" style="margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(239, 68, 68, 0.2);">
+                    <strong>Action Required:</strong> Please try uploading again.
+                </div>
             `;
         }
     </script>

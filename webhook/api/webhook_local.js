@@ -799,7 +799,7 @@ async function handleSelectReturnOrderForm(formData, visitorInfo) {
         replies: [{
           text: "❌ Order not found. Please try again."
         }],
-        suggestions: ["🏠 Back to Menu"]
+        suggestions: ["Back to Menu"]
       };
     }
     
@@ -1305,6 +1305,16 @@ async function getCustomerData(customerEmail) {
         
         console.log(`🎫 Found ${issues.length} issues`);
         
+        // Step 7: Calculate fraud detection score
+        const fraudDetection = calculateFraudScore({
+          orders,
+          deliveredOrders,
+          issues,
+          analytics
+        });
+        
+        console.log(`🚨 Fraud Score: ${fraudDetection.fraudScore}/100 - ${fraudDetection.riskLevel}`);
+        
         return {
           userId: userId,
           customerName: customerProfile.name || 'Customer',
@@ -1316,7 +1326,8 @@ async function getCustomerData(customerEmail) {
           cartItems,
           favorites,
           issues,
-          analytics
+          analytics,
+          fraudDetection
         };
         
       } catch (firestoreError) {
@@ -1393,7 +1404,224 @@ function calculateComprehensiveAnalytics(orders, cartItems, favorites, customerP
   };
 }
 
-// � MOCK CUSTOMER DATA (Fallback)
+// 🚨 FRAUD DETECTION SYSTEM
+/**
+ * Calculate fraud risk score based on customer behavior patterns
+ * @param {Object} customerData - Complete customer data including orders, issues, etc.
+ * @returns {Object} Fraud detection result with score, risk level, and flags
+ */
+function calculateFraudScore(customerData) {
+  const { orders = [], deliveredOrders = [], issues = [], analytics = {} } = customerData;
+  
+  // Initialize fraud indicators
+  const fraudIndicators = {
+    cancelRate: 0,
+    returnRate: 0,
+    issueRate: 0,
+    highValueCancellations: 0,
+    rapidOrderPattern: 0,
+    addressChanges: 0,
+    paymentFailures: 0,
+    suspiciousTimePattern: 0
+  };
+  
+  const totalOrders = orders.length + deliveredOrders.length;
+  
+  if (totalOrders === 0) {
+    return {
+      fraudScore: 0,
+      riskLevel: 'Unknown',
+      riskColor: 'grey',
+      indicators: fraudIndicators,
+      flags: ['New customer - insufficient data']
+    };
+  }
+  
+  // 1. Calculate cancellation rate
+  const canceledOrders = orders.filter(o => 
+    o.status === 'Cancelled' || 
+    o.status === 'OrderStatus.cancelled' ||
+    o.status === 'canceled'
+  );
+  fraudIndicators.cancelRate = (canceledOrders.length / totalOrders) * 100;
+  
+  // 2. Calculate return rate from issues
+  const returnIssues = issues.filter(i => 
+    i.issueType === 'Order Return' || 
+    i.issueType === 'Return' ||
+    i.issueType === 'return'
+  );
+  fraudIndicators.returnRate = (returnIssues.length / totalOrders) * 100;
+  
+  // 3. Calculate overall issue rate
+  fraudIndicators.issueRate = (issues.length / totalOrders) * 100;
+  
+  // 4. Check for high-value cancellations (orders > ₹5000)
+  fraudIndicators.highValueCancellations = canceledOrders.filter(o => 
+    o.totalAmount > 5000
+  ).length;
+  
+  // 5. Detect rapid order pattern (multiple orders in short time)
+  if (orders.length >= 3) {
+    const sortedOrders = [...orders].sort((a, b) => 
+      new Date(b.orderDate) - new Date(a.orderDate)
+    );
+    
+    // Check if 3+ orders placed within 24 hours
+    const recentOrders = sortedOrders.slice(0, 3);
+    const timeSpan = new Date(recentOrders[0].orderDate) - new Date(recentOrders[2].orderDate);
+    const hoursSpan = timeSpan / (1000 * 60 * 60);
+    
+    if (hoursSpan < 24) {
+      fraudIndicators.rapidOrderPattern = 1;
+    }
+  }
+  
+  // 6. Check for address inconsistencies
+  const uniqueAddresses = new Set();
+  [...orders, ...deliveredOrders].forEach(o => {
+    if (o.shippingAddress) {
+      uniqueAddresses.add(JSON.stringify(o.shippingAddress));
+    }
+  });
+  
+  if (uniqueAddresses.size > 3 && totalOrders < 10) {
+    fraudIndicators.addressChanges = uniqueAddresses.size;
+  }
+  
+  // 7. Check payment failures
+  const paymentFailures = orders.filter(o => 
+    o.paymentStatus === 'failed' || 
+    o.paymentStatus === 'PaymentStatus.failed'
+  );
+  fraudIndicators.paymentFailures = paymentFailures.length;
+  
+  // 8. Check for suspicious time patterns (many orders late night 12am-5am)
+  const lateNightOrders = [...orders, ...deliveredOrders].filter(o => {
+    const hour = new Date(o.orderDate).getHours();
+    return hour >= 0 && hour < 5;
+  });
+  
+  if (lateNightOrders.length > totalOrders * 0.5) {
+    fraudIndicators.suspiciousTimePattern = 1;
+  }
+  
+  // Calculate weighted fraud score (0-100)
+  let fraudScore = 0;
+  const flags = [];
+  
+  // Weight: Cancel rate (max 25 points)
+  if (fraudIndicators.cancelRate > 50) {
+    fraudScore += 25;
+    flags.push(`High cancellation rate: ${fraudIndicators.cancelRate.toFixed(1)}%`);
+  } else if (fraudIndicators.cancelRate > 30) {
+    fraudScore += 15;
+    flags.push(`Elevated cancellation rate: ${fraudIndicators.cancelRate.toFixed(1)}%`);
+  } else if (fraudIndicators.cancelRate > 15) {
+    fraudScore += 8;
+  }
+  
+  // Weight: Return rate (max 20 points)
+  if (fraudIndicators.returnRate > 40) {
+    fraudScore += 20;
+    flags.push(`High return rate: ${fraudIndicators.returnRate.toFixed(1)}%`);
+  } else if (fraudIndicators.returnRate > 25) {
+    fraudScore += 12;
+    flags.push(`Elevated return rate: ${fraudIndicators.returnRate.toFixed(1)}%`);
+  } else if (fraudIndicators.returnRate > 10) {
+    fraudScore += 6;
+  }
+  
+  // Weight: Issue rate (max 15 points)
+  if (fraudIndicators.issueRate > 50) {
+    fraudScore += 15;
+    flags.push(`High issue rate: ${fraudIndicators.issueRate.toFixed(1)}%`);
+  } else if (fraudIndicators.issueRate > 30) {
+    fraudScore += 10;
+  } else if (fraudIndicators.issueRate > 15) {
+    fraudScore += 5;
+  }
+  
+  // Weight: High-value cancellations (max 15 points)
+  if (fraudIndicators.highValueCancellations >= 3) {
+    fraudScore += 15;
+    flags.push(`${fraudIndicators.highValueCancellations} high-value cancellations`);
+  } else if (fraudIndicators.highValueCancellations >= 2) {
+    fraudScore += 10;
+  } else if (fraudIndicators.highValueCancellations >= 1) {
+    fraudScore += 5;
+  }
+  
+  // Weight: Rapid order pattern (max 10 points)
+  if (fraudIndicators.rapidOrderPattern) {
+    fraudScore += 10;
+    flags.push('Rapid order placement detected');
+  }
+  
+  // Weight: Address changes (max 10 points)
+  if (fraudIndicators.addressChanges > 5) {
+    fraudScore += 10;
+    flags.push(`Multiple addresses: ${fraudIndicators.addressChanges}`);
+  } else if (fraudIndicators.addressChanges > 3) {
+    fraudScore += 6;
+  }
+  
+  // Weight: Payment failures (max 5 points)
+  if (fraudIndicators.paymentFailures > 3) {
+    fraudScore += 5;
+    flags.push(`${fraudIndicators.paymentFailures} payment failures`);
+  } else if (fraudIndicators.paymentFailures > 1) {
+    fraudScore += 3;
+  }
+  
+  // Weight: Suspicious time pattern (max 5 points)
+  if (fraudIndicators.suspiciousTimePattern) {
+    fraudScore += 5;
+    flags.push('Unusual ordering time pattern');
+  }
+  
+  // Determine risk level and color
+  let riskLevel, riskColor;
+  if (fraudScore >= 70) {
+    riskLevel = 'Critical';
+    riskColor = 'red';
+  } else if (fraudScore >= 50) {
+    riskLevel = 'High';
+    riskColor = 'orange';
+  } else if (fraudScore >= 30) {
+    riskLevel = 'Medium';
+    riskColor = 'yellow';
+  } else if (fraudScore >= 15) {
+    riskLevel = 'Low';
+    riskColor = 'green';
+  } else {
+    riskLevel = 'Minimal';
+    riskColor = 'green';
+  }
+  
+  // Add positive indicators if low risk
+  if (fraudScore < 30 && totalOrders >= 5) {
+    flags.push('Good order history');
+  }
+  
+  if (flags.length === 0) {
+    flags.push('No fraud indicators detected');
+  }
+  
+  return {
+    fraudScore: Math.round(fraudScore),
+    riskLevel,
+    riskColor,
+    indicators: fraudIndicators,
+    flags,
+    totalOrders,
+    canceledCount: canceledOrders.length,
+    returnCount: returnIssues.length,
+    issueCount: issues.length
+  };
+}
+
+// 📊 MOCK CUSTOMER DATA (Fallback)
 function getMockCustomerData(customerEmail) {
   const mockCustomerData = {
     'priya2@gmail.com': {
@@ -1909,20 +2137,92 @@ async function sendCustomerWidget(visitorInfo) {
 function createComprehensiveCustomerWidget(visitorInfo, customerData) {
   const sections = [];
   
+  // Calculate counts
+  const ordersCount = customerData.orders?.length || 0;
+  const deliveredCount = customerData.deliveredOrders?.length || 0;
+  const issuesCount = customerData.issues?.length || 0;
+  
+  // 🚨 FRAUD RISK ALERT - Display at top if score >= 30
+  const fraud = customerData.fraudDetection || {};
+  if (fraud.fraudScore >= 30) {
+    sections.push({
+      name: "fraud_alert",
+      layout: "info",
+      title: "🚨 FRAUD RISK ALERT",
+      data: [
+        { label: "RISK SCORE", value: `${fraud.fraudScore}/100` },
+        { label: "RISK LEVEL", value: fraud.riskLevel.toUpperCase() },
+        { label: "Cancel Rate", value: `${fraud.indicators?.cancelRate?.toFixed(1) || 0}%` },
+        { label: "Return Rate", value: `${fraud.indicators?.returnRate?.toFixed(1) || 0}%` },
+        { label: "Issue Rate", value: `${fraud.indicators?.issueRate?.toFixed(1) || 0}%` },
+        { label: "⚠️ Flags", value: fraud.flags?.join(' | ') || 'None' }
+      ]
+    });
+  } else if (fraud.fraudScore > 0) {
+    // Show minimal fraud info for low risk
+    sections.push({
+      name: "fraud_status",
+      layout: "info",
+      title: "✅ Fraud Risk Status",
+      data: [
+        { label: "Risk Score", value: `${fraud.fraudScore}/100 - ${fraud.riskLevel}` },
+        { label: "Status", value: fraud.flags?.[0] || 'No fraud indicators detected' }
+      ]
+    });
+  }
+  
   // Customer Overview Section
   sections.push({
     name: "customer_overview",
     layout: "info",
-    title: `👋 Hello ${customerData.customerName || visitorInfo.name}!`,
+    title: "User Info",
     data: [
       { label: "Customer", value: customerData.customerName || visitorInfo.name },
       { label: "Email", value: customerData.customerEmail },
-      { label: "Phone", value: customerData.customerPhone || 'Not provided' },
       { label: "Member Since", value: customerData.analytics?.customerSince || 'Recently' },
-      { label: "Loyalty Status", value: `${customerData.analytics?.loyaltyStatus || 'New'} Member` }
+      { label: "Orders", value: ordersCount.toString() },
+      { label: "Delivered", value: deliveredCount.toString() },
+      { label: "Issues", value: issuesCount.toString() }
     ]
-    // Removed global Return/Cancel buttons - they now appear only on individual pending orders
   });
+  
+  // Customer Issues Section (from Firestore issues collection) - Individual Sections with Buttons
+  if (customerData.issues && customerData.issues.length > 0) {
+    customerData.issues.forEach((issue, index) => {
+      // Determine status emoji
+      const statusEmoji = (issue.status === 'Paid' || issue.paymentStatus === 'completed') ? '✅' : '⚠️';
+      const statusText = issue.status || 'Pending Review';
+      
+      // Build issue card as listing with single item
+      const issueCard = {
+        name: `issue_${index}`,
+        title: `${statusEmoji} ${issue.id || `Issue ${index + 1}`}`,
+        text: `${issue.productName || 'Product'} - ${statusText}`,
+        subtext: `Amount: ₹${issue.amount || 0} | Created: ${new Date(issue.createdAt).toLocaleDateString()}${issue.productAccuracy !== undefined ? ` | Match: ${issue.productAccuracy}%` : ''}`
+      };
+      
+      // Add payment URL as clickable link if available
+      if (issue.paymentUrl) {
+        issueCard.link = issue.paymentUrl;
+        issueCard.link_hint = "Click to pay";
+      }
+      
+      // Create individual section for each issue
+      sections.push({
+        name: `issue_section_${index}`,
+        layout: "listing",
+        title: index === 0 ? "Order Return" : "",
+        data: [issueCard],
+        actions: issue.orderId ? [{
+          label: "View Details",
+          name: `ORDER_DETAILS:${issue.orderId}`,
+          type: "postback"
+        }] : []
+      });
+    });
+    
+    console.log(`✅ Added ${customerData.issues.length} individual issue sections with buttons`);
+  }
   
   // Orders Summary Section
   if (customerData.orders && customerData.orders.length > 0) {
@@ -1930,18 +2230,21 @@ function createComprehensiveCustomerWidget(visitorInfo, customerData) {
     sections.push({
       name: "orders_summary",
       layout: "listing",
-      title: `📦 Recent Orders (${customerData.orders.length} total)`,
+      title: `Recent Orders (${customerData.orders.length} total)`,
       data: recentOrders.map(order => {
         // Check if order is pending/cancellable
         const isPending = order.status === 'OrderStatus.pending' || 
                          order.status === 'Pending' || 
                          order.status === 'Processing';
         
+        // Get product name from order items
+        const productName = order.items?.[0]?.productName || order.items?.[0]?.name || 'Product';
+        
         const orderItem = {
           name: order.id,
-          title: `${getOrderStatusWithIcon(order.status)} Order ${order.id}`,
+          title: `${productName} - ${order.id}`,
           text: `₹${order.totalAmount} • ${new Date(order.orderDate).toLocaleDateString()}`,
-          subtext: `${order.paymentStatus} • ${order.trackingNumber || 'No tracking'}`
+          subtext: `${order.shipping_status || 'Processing'} • ${order.trackingNumber || 'No tracking'}`
         };
         
         // Add cancel button only for pending orders
@@ -1979,56 +2282,18 @@ function createComprehensiveCustomerWidget(visitorInfo, customerData) {
   // Analytics Section
   if (customerData.analytics) {
     const analytics = customerData.analytics;
+    
     sections.push({
       name: "analytics",
       layout: "info",
-      title: "📊 Customer Analytics",
+      title: "Customer Analytics",
       data: [
         { label: "Total Orders", value: analytics.totalOrders?.toString() || '0' },
         { label: "Total Spent", value: `₹${analytics.totalSpent || 0}` },
         { label: "Average Order", value: `₹${analytics.avgOrderValue || 0}` },
-        { label: "Cart Value", value: `₹${analytics.cartValue || 0}` },
-        { label: "Favorite Category", value: analytics.favoriteCategory || 'None' }
+        { label: "Cart Value", value: `₹${analytics.cartValue || 0}` }
       ]
     });
-  }
-  
-  // Customer Issues Section (from Firestore issues collection) - Individual Sections with Buttons
-  if (customerData.issues && customerData.issues.length > 0) {
-    customerData.issues.forEach((issue, index) => {
-      // Determine status emoji
-      const statusEmoji = (issue.status === 'Paid' || issue.paymentStatus === 'completed') ? '✅' : '⚠️';
-      const statusText = issue.status || 'Pending Review';
-      
-      // Build issue card as listing with single item
-      const issueCard = {
-        name: `issue_${index}`,
-        title: `${statusEmoji} ${issue.id || `Issue ${index + 1}`}`,
-        text: `${issue.productName || 'Product'} - ${statusText}`,
-        subtext: `Amount: ₹${issue.amount || 0} | Created: ${new Date(issue.createdAt).toLocaleDateString()}${issue.productAccuracy !== undefined ? ` | Match: ${issue.productAccuracy}%` : ''}`
-      };
-      
-      // Add payment URL as clickable link if available
-      if (issue.paymentUrl) {
-        issueCard.link = issue.paymentUrl;
-        issueCard.link_hint = "Click to pay";
-      }
-      
-      // Create individual section for each issue
-      sections.push({
-        name: `issue_section_${index}`,
-        layout: "listing",
-        title: index === 0 ? "⚠️ Order Return - Image Verification" : "",
-        data: [issueCard],
-        actions: issue.orderId ? [{
-          label: "View Details",
-          name: `ORDER_DETAILS:${issue.orderId}`,
-          type: "postback"
-        }] : []
-      });
-    });
-    
-    console.log(`✅ Added ${customerData.issues.length} individual issue sections with buttons`);
   }
   
   console.log(`📊 Total sections in widget: ${sections.length}`);
@@ -2298,7 +2563,7 @@ async function handleCancelAction(customerData, visitorInfo) {
             text: "📦 No orders available for cancellation.\n\n✅ Orders can only be cancelled if they are in:\n• Pending\n• Confirmed\n• Processing\n\nOrders that are shipped, delivered, or already cancelled cannot be cancelled."
           }
         ],
-        suggestions: ["🏠 Back to Menu"]
+        suggestions: ["Back to Menu"]
       };
     }
     
@@ -2312,7 +2577,7 @@ async function handleCancelAction(customerData, visitorInfo) {
       ],
       suggestions: cancellableOrders.map(order => 
         `Cancel ${order.id} | ${order.product_name} | ₹${order.total_amount}`
-      ).concat(["🏠 Back to Menu"])
+      ).concat(["Back to Menu"])
     };
     
   } catch (error) {
@@ -2343,7 +2608,7 @@ function handleOtherAction(customerData, visitorInfo) {
         type: "postback"
       },
       {
-        label: "🏠 View Profile",
+        label: "View Profile",
         name: "view_profile",
         type: "postback"
       },
@@ -2504,7 +2769,7 @@ function handleOrderReturn(order, visitorInfo) {
         type: "postback"
       },
       {
-        label: "🏠 Back to Menu",
+        label: "Back to Menu",
         name: "back_to_menu",
         type: "postback"
       }
@@ -2704,12 +2969,32 @@ app.post('/webhook', async (req, res) => {
     const visitorInfo = extractVisitorInfo(context);
 
     if (handler === "trigger" || handler === "triggerhandler") {
-      console.log("✅ Form Controller triggerhandler test - sending ACK");
-      return res.status(200).json({
-        handler: "triggerhandler",
-        status: "success",
-        message: "Webhook is active and ready"
-      });
+      console.log("✅ Trigger handler - loading customer widget");
+      
+      // Check if visitor email exists
+      if (!visitorInfo.email) {
+        console.log("⚠️ No visitor email found, sending basic response");
+        return res.status(200).json({
+          handler: "triggerhandler",
+          status: "success",
+          message: "Webhook is active and ready"
+        });
+      }
+      
+      // Load customer data and return widget
+      try {
+        const customerData = await getCustomerData(visitorInfo.email);
+        const widgetResponse = createComprehensiveCustomerWidget(visitorInfo, customerData);
+        console.log("✅ Widget loaded successfully for trigger handler");
+        return res.status(200).json(widgetResponse);
+      } catch (error) {
+        console.error("❌ Error loading widget in trigger handler:", error);
+        return res.status(200).json({
+          handler: "triggerhandler",
+          status: "error",
+          message: "Failed to load widget"
+        });
+      }
     }
 
     if (handler === "message" && !req.body.visitor && !req.body.operation) {
@@ -2766,7 +3051,7 @@ app.post('/webhook', async (req, res) => {
               replies: [{
                 text: `❌ Order ${orderId} not found.`
               }],
-              suggestions: ["🏠 Back to Menu"]
+              suggestions: ["Back to Menu"]
             });
           }
           
@@ -2785,44 +3070,10 @@ app.post('/webhook', async (req, res) => {
             console.log('⚠️ No issue found for order:', orderId);
           }
           
-          // If payment URL already exists, show it in widget instead of form
-          if (issue && issue.paymentUrl) {
-            console.log('🌐 Displaying existing payment link in widget...');
-            return res.status(200).json({
-              type: "widget_detail",
-              sections: [
-                {
-                  name: "order_info",
-                  layout: "info",
-                  title: "📋 Order Details",
-                  data: [
-                    { label: "Order ID", value: order.id },
-                    { label: "Product", value: order.items?.[0]?.productName || 'N/A' },
-                    { label: "Amount", value: `₹${order.totalAmount}` },
-                    { label: "Issue Type", value: issue.issueType || 'N/A' },
-                    { label: "Status", value: issue.status || order.status }
-                  ]
-                },
-                {
-                  name: `payment_section_${orderId}`,
-                  layout: "listing",
-                  title: "💳 Payment Link",
-                  data: [
-                    {
-                      name: `pay_${orderId}`,
-                      title: "🔐 Complete Payment",
-                      text: `Order: ${orderId}`,
-                      subtext: `Amount: ₹${order.totalAmount}`,
-                      link: issue.paymentUrl,
-                      link_hint: "Click here to pay securely"
-                    }
-                  ]
-                }
-              ]
-            });
-          }
+          // Always show form to allow regenerating payment link
+          console.log('📋 Creating order details form...');
           
-          // Create form with order details (if no payment URL exists yet)
+          // Create form with order details
           const orderDetailsForm = {
             type: "form",
             name: "order",
@@ -2887,6 +3138,7 @@ app.post('/webhook', async (req, res) => {
           };
           
           console.log('✅ Sending order details form to SalesIQ');
+          console.log('📋 Form structure:', JSON.stringify(orderDetailsForm, null, 2));
           return res.status(200).json(orderDetailsForm);
           
         } catch (error) {
@@ -2896,7 +3148,7 @@ app.post('/webhook', async (req, res) => {
             replies: [{
               text: `❌ Error loading order details. Please try again.`
             }],
-            suggestions: ["🏠 Back to Menu"]
+            suggestions: ["Back to Menu"]
           });
         }
       }
@@ -3135,10 +3387,17 @@ app.post('/webhook', async (req, res) => {
         hasInfo: true
       };
       
-      // 🔄 AUTO-SAVE PENDING PRODUCT VERIFICATION WHEN USER RETURNS TO CHAT
+      // 🔄 AUTO-SAVE PENDING PRODUCT VERIFICATION WHEN USER CLICKS "SHOW RESULTS" OR SENDS SPECIFIC MESSAGE
       const session = userSessions.get(visitorEmail);
-      if (session && session.pendingProductVerification && messageText) {
-        console.log('💾 User returned to chat - saving pending product verification to Firestore...');
+      const isShowResultsRequest = messageText && (
+        messageText.toLowerCase().includes('show results') ||
+        messageText.toLowerCase().includes('check results') ||
+        messageText.toLowerCase().includes('view verification') ||
+        messageText.toLowerCase().includes('verification complete')
+      );
+      
+      if (session && session.pendingProductVerification && isShowResultsRequest) {
+        console.log('💾 User requested results - saving pending product verification to Firestore...');
         const pendingData = session.pendingProductVerification;
         
         try {
@@ -3176,9 +3435,26 @@ app.post('/webhook', async (req, res) => {
         console.log('✅ User clicked Check Expiry Results button');
         console.log('📧 Looking for expiry verification for email:', visitorEmail);
         
+        const session = userSessions.get(visitorEmail);
+        
+        // ✅ CHECK expiry_verify BEFORE ALLOWING TO PROCEED
+        if (!session || session.expiry_verify !== true) {
+          console.log('❌ expiry_verify is FALSE - blocking access to results');
+          return res.status(200).json({
+            action: "reply",
+            replies: [{
+              text: `⚠️ **Expiry Verification Required**\n\n` +
+                    `Kindly verify the expiry date before continuing.\n\n` +
+                    `Please upload a product image showing the expiry date first.`
+            }],
+            suggestions: ["Back to Menu"]
+          });
+        }
+        
+        console.log('✅ expiry_verify is TRUE - allowing access to results');
+        
         try {
           // First, check if there's a pending expiry verification in session
-          const session = userSessions.get(visitorEmail);
           let matchingIssue = null;
           
           if (session && session.pendingExpiryVerification) {
@@ -3308,23 +3584,21 @@ app.post('/webhook', async (req, res) => {
               const response = {
                 action: "reply",
                 replies: [{
-                  text: `✅ **Expiry Verified - Product is EXPIRED**\n\n` +
-                        `📦 **Order Details:**\n` +
+                  text: `**Expiry Verified - Product is EXPIRED**\n\n` +
+                        `**Order Details:**\n` +
                         `Product: ${matchingIssue.productName}\n` +
                         `Order ID: ${matchingIssue.orderId}\n` +
                         `Amount: ₹${matchingIssue.amount}\n\n` +
-                        `📅 **Expiry Check Results:**\n` +
                         `Expiry Date: ${expiryInfo.expiryDate}\n` +
                         `Current Date: ${expiryInfo.currentDate}\n` +
-                        `Status: EXPIRED ✅\n` +
+                        `Status: EXPIRED \n` +
                         `Confidence: ${expiryInfo.confidence}%\n\n` +
-                        `🔍 **Next Step: Product Verification**\n` +
                         `Please verify that this is the correct product you ordered.\n\n` +
-                        `👉 Click the link below to verify the product:\n${verificationUrl}`
+                        `Click the link below to verify the product:\n${verificationUrl}`
                 }],
                 suggestions: [
-                  "🔍 Check Verification Status",
-                  "🏠 Back to Menu"
+                  "Check Verification Status",
+                  "Back to Menu"
                 ]
               };
               
@@ -3336,21 +3610,12 @@ app.post('/webhook', async (req, res) => {
               const response = {
                 action: "reply",
                 replies: [{
-                  text: `⚠️ **Expiry Verification Complete**\n\n` +
-                        `📦 **Order Details:**\n` +
-                        `Product: ${matchingIssue.productName}\n` +
-                        `Order ID: ${matchingIssue.orderId}\n` +
-                        `Amount: ₹${matchingIssue.amount}\n\n` +
-                        `📅 **Expiry Check Results:**\n` +
-                        `Expiry Date: ${expiryInfo.expiryDate}\n` +
-                        `Current Date: ${expiryInfo.currentDate}\n` +
-                        `Status: NOT EXPIRED\n` +
-                        `Confidence: ${expiryInfo.confidence}%\n\n` +
-                        `⚠️ The product is not expired yet. Please contact admin for more support.`
+                  text: `**Expiry Verification Complete**\n\n` +
+                        `**Status:** NOT EXPIRED\n` +
+                        `The product is not expired yet. Please contact support by pressing "yes" above`
                 }],
                 suggestions: [
-                  "💬 Contact Admin",
-                  "🏠 Back to Menu"
+                  "Back to Menu"
                 ]
               };
               
@@ -3361,7 +3626,7 @@ app.post('/webhook', async (req, res) => {
             return res.status(200).json({
               action: "reply",
               replies: [{ text: "❌ No expiry verification results found. Please upload an image first." }],
-              suggestions: ["🔄 Return Order", "🏠 Back to Menu"]
+              suggestions: ["🔄 Return Order", "Back to Menu"]
             });
           }
         } catch (error) {
@@ -3369,7 +3634,7 @@ app.post('/webhook', async (req, res) => {
           return res.status(200).json({
             action: "reply",
             replies: [{ text: "❌ Error retrieving expiry verification results. Please try again." }],
-            suggestions: ["🔄 Return Order", "🏠 Back to Menu"]
+            suggestions: ["🔄 Return Order", "Back to Menu"]
           });
         }
       }
@@ -3379,6 +3644,43 @@ app.post('/webhook', async (req, res) => {
           messageText.toLowerCase().includes('verification status')) {
         console.log('✅ User clicked Check Verification Status button');
         console.log('📧 Looking for verification for email:', visitorEmail);
+        
+        const session = userSessions.get(visitorEmail);
+        
+        // ✅ FIRST: Check if there's pending product verification in session and save it
+        if (session && session.pendingProductVerification) {
+          console.log('💾 Found pending product verification in session, saving to Firestore...');
+          const pendingData = session.pendingProductVerification;
+          
+          try {
+            if (pendingData.firestoreDocId) {
+              // Update existing expiry verification document with product verification
+              console.log('📝 Updating existing expiry verification document:', pendingData.firestoreDocId);
+              await db.collection('issues').doc(pendingData.firestoreDocId).update({
+                productVerification: pendingData.productVerification,
+                status: pendingData.status,
+                resolution: pendingData.resolution,
+                updatedAt: admin.firestore.FieldValue.serverTimestamp()
+              });
+              console.log('✅ Expiry verification updated with product verification');
+            } else {
+              // Create new product verification document
+              console.log('📝 Creating new product verification document:', pendingData.id);
+              await db.collection('issues').doc(pendingData.id).set({
+                ...pendingData,
+                createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                updatedAt: admin.firestore.FieldValue.serverTimestamp()
+              });
+              console.log('✅ New product verification saved to Firestore');
+            }
+            
+            // Clear the pending verification from session
+            delete session.pendingProductVerification;
+            console.log('✅ Pending product verification cleared from session');
+          } catch (firestoreError) {
+            console.error('⚠️ Error saving product verification to Firestore:', firestoreError.message);
+          }
+        }
         
         try {
           // Query Firebase for the most recent expiry verification with product verification
@@ -3432,31 +3734,24 @@ app.post('/webhook', async (req, res) => {
               console.log('📋 Order Details for Agent:');
               console.log(JSON.stringify(orderDetails, null, 2));
               
-              // Display verification results and offer agent connection
+              // Store issue details in session for later use
+              if (!session) {
+                userSessions.set(visitorEmail, {});
+              }
+              const currentSession = userSessions.get(visitorEmail);
+              currentSession.currentIssue = matchingIssue;
+              
+              // Display verification results and offer resolution options
               const response = {
                 action: "reply",
                 replies: [{
-                  text: `✅ **Verification Complete**\n\n` +
-                        `📦 **Order Details:**\n` +
-                        `Product: ${matchingIssue.productName}\n` +
-                        `Order ID: ${matchingIssue.orderId}\n` +
-                        `Amount: ₹${matchingIssue.amount}\n\n` +
-                        `📅 **Expiry Verification:**\n` +
-                        `Expiry Date: ${expiryInfo.expiryDate}\n` +
-                        `Status: ${expiryInfo.isExpired ? 'EXPIRED ✅' : 'NOT EXPIRED'}\n` +
-                        `Confidence: ${expiryInfo.confidence}%\n\n` +
-                        `🔍 **Product Verification:**\n` +
-                        `Product Match: ${productInfo.isMatch ? 'YES ✅' : 'NO'}\n` +
-                        `Damage Detected: ${productInfo.damageDetected ? 'YES ⚠️' : 'NO'}\n` +
-                        `Confidence: ${productInfo.confidence}%\n\n` +
-                        `📋 **Return Request:**\n` +
-                        `Issue ID: ${matchingIssue.id}\n` +
-                        `Status: ${matchingIssue.status}\n` +
-                        `Resolution: ${matchingIssue.resolution}\n\n` +
-                        `Would you like to connect with a human agent to process your refund?`
+                  text: `**Verification Complete**\n\n` +
+                        `How would you like us to resolve this?`
                 }],
                 suggestions: [
-                  "🏠 Back to Menu"
+                  "Refund the Amount",
+                  "Replace the Order",
+                  "Back to Menu"
                 ]
               };
               
@@ -3475,10 +3770,8 @@ app.post('/webhook', async (req, res) => {
               const response = {
                 action: "reply",
                 replies: [{
-                  text: `⚠️ **Product Verification Required**\n\n` +
+                  text: `**Product Verification Required**\n\n` +
                         `Your expiry verification is complete, but we need to verify the product.\n\n` +
-                        `📦 Product: ${matchingIssue.productName}\n` +
-                        `📦 Order ID: ${matchingIssue.orderId}\n\n` +
                         `Please upload a photo of the product to complete verification:\n${verificationUrl}`
                 }],
                 suggestions: [
@@ -3493,7 +3786,7 @@ app.post('/webhook', async (req, res) => {
             return res.status(200).json({
               action: "reply",
               replies: [{ text: "❌ No verification found. Please start a return request first." }],
-              suggestions: ["🔄 Return Order", "🏠 Back to Menu"]
+              suggestions: ["🔄 Return Order", "Back to Menu"]
             });
           }
         } catch (error) {
@@ -3501,17 +3794,69 @@ app.post('/webhook', async (req, res) => {
           return res.status(200).json({
             action: "reply",
             replies: [{ text: "❌ Error retrieving verification status. Please try again." }],
-            suggestions: ["🔄 Return Order", "🏠 Back to Menu"]
+            suggestions: ["🔄 Return Order", "Back to Menu"]
           });
         }
       }
       
       // 🎯 HANDLE "SHOW VERIFICATION RESULTS" BUTTON
       if (messageText.toLowerCase().includes('show verification results') || 
-          messageText.toLowerCase().includes('show results')) {
+          messageText.toLowerCase().includes('show results') ||
+          messageText.toLowerCase().includes('show verification result')) {
         console.log('✅ User clicked Show Verification Results button');
         
         const session = userSessions.get(visitorEmail);
+        
+        // ✅ CHECK product_verify BEFORE ALLOWING TO PROCEED
+        if (!session || session.product_verify !== true) {
+          console.log('❌ product_verify is FALSE - blocking access to results');
+          return res.status(200).json({
+            action: "reply",
+            replies: [{
+              text: `⚠️ **Verification Required**\n\n` +
+                    `Kindly verify the product before continuing.\n\n` +
+                    `Please upload a product image for verification first.`
+            }],
+            suggestions: ["Back to Menu"]
+          });
+        }
+        
+        console.log('✅ product_verify is TRUE - allowing access to results');
+        
+        // ✅ SAVE PENDING VERIFICATION TO FIRESTORE FIRST
+        if (session && session.pendingProductVerification) {
+          console.log('💾 Saving pending product verification to Firestore...');
+          const pendingData = session.pendingProductVerification;
+          
+          try {
+            if (pendingData.firestoreDocId) {
+              // Update existing expiry verification document with product verification
+              console.log('📝 Updating existing expiry verification document:', pendingData.firestoreDocId);
+              await db.collection('issues').doc(pendingData.firestoreDocId).update({
+                productVerification: pendingData.productVerification,
+                status: pendingData.status,
+                resolution: pendingData.resolution,
+                updatedAt: admin.firestore.FieldValue.serverTimestamp()
+              });
+              console.log('✅ Expiry verification updated with product verification');
+            } else {
+              // Create new product verification document
+              console.log('📝 Creating new product verification document:', pendingData.id);
+              await db.collection('issues').doc(pendingData.id).set({
+                ...pendingData,
+                createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                updatedAt: admin.firestore.FieldValue.serverTimestamp()
+              });
+              console.log('✅ New product verification saved to Firestore');
+            }
+            
+            // Clear the pending verification from session
+            delete session.pendingProductVerification;
+            console.log('✅ Pending product verification cleared from session');
+          } catch (firestoreError) {
+            console.error('⚠️ Error saving product verification to Firestore:', firestoreError.message);
+          }
+        }
         
         // Check if there's a pending verification result
         if (session && session.verificationResult) {
@@ -3529,61 +3874,85 @@ app.post('/webhook', async (req, res) => {
               
               if (issueDoc.exists) {
                 const issueData = issueDoc.data();
-                console.log('✅ Issue data fetched:', issueData);
-                
-                // In-memory storage for verification results (temporary - use database in production)
-                const verificationResults = new Map();
-                const expiryUploadSessions = new Map(); // In-memory storage for expiry upload sessions (email -> {orderId, productId, imageUrl})
-                
-                delete session.autoDisplayVerification;
+                console.log('✅ Issue data fetched from Firestore:', issueData);
                 
                 // Display complete verification results with all issue data
-                let statusEmoji = issueData.imageVerification.isMatch ? '✅' : '❌';
-                let statusText = issueData.imageVerification.isMatch ? 'Verified' : 'Not Verified';
+                let statusEmoji = issueData.imageVerification?.isMatch ? '✅' : '❌';
+                let statusText = issueData.imageVerification?.isMatch ? 'Verified' : 'Not Verified';
                 
-                if (issueData.imageVerification.isMatch && issueData.imageVerification.damageDetected) {
+                if (issueData.imageVerification?.isMatch && issueData.imageVerification?.damageDetected) {
                   statusEmoji = '⚠️';
                   statusText = 'Verified with Damage';
                 }
+                
+                // Store issue details in session for later use
+                const currentSession = userSessions.get(visitorEmail) || {};
+                currentSession.currentIssue = issueData;
+                userSessions.set(visitorEmail, currentSession);
                 
                 const response = {
                   action: "reply",
                   replies: [{
                     text: `${statusEmoji} **Verification Complete**\n\n` +
-                          `📦 **Order Details:**\n` +
-                          `Product: ${issueData.productName}\n` +
-                          `Order ID: ${issueData.orderId}\n` +
-                          `Amount: ₹${issueData.amount}\n\n` +
-                          `🔍 **Verification Results:**\n` +
-                          `Product Match: ${issueData.imageVerification.isMatch ? 'YES' : 'NO'}\n` +
-                          `Damage Detected: ${issueData.imageVerification.damageDetected ? 'YES' : 'NO'}\n` +
-                          `Status: ${statusText}\n\n` +
-                          `📋 **Return Request:**\n` +
-                          `Issue ID: ${issueData.id}\n` +
-                          `Status: ${issueData.status}\n` +
-                          `Resolution: ${issueData.resolution}\n\n` +
-                          `Would you like to connect with a human agent?`
+                          `How would you like us to resolve this?`
                   }],
                   suggestions: [
-                    "🏠 Back to Menu"
+                    "Refund the Amount",
+                    "Replace the Order",
+                    "Back to Menu"
                   ]
                 };
                 
                 return res.status(200).json(response);
               } else {
-                console.error('❌ Issue not found in Firestore:', result.issueId);
-                return res.status(200).json({
+                // ⚠️ Firestore document not found - use session data directly
+                console.log('⚠️ Issue not found in Firestore, using session data');
+                
+                const statusEmoji = result.isMatch ? '✅' : '❌';
+                let statusText = result.isMatch ? 'Verified' : 'Not Verified';
+                
+                if (result.isMatch && result.damageDetected) {
+                  statusEmoji = '⚠️';
+                  statusText = 'Verified with Damage';
+                }
+                
+                // Store result in session for later use
+                const currentSession = userSessions.get(visitorEmail) || {};
+                currentSession.currentIssue = {
+                  productName: result.productName,
+                  orderId: result.orderId,
+                  amount: result.amount,
+                  issueId: result.issueId,
+                  imageVerification: {
+                    isMatch: result.isMatch,
+                    damageDetected: result.damageDetected
+                  },
+                  status: 'Verified - Product Matched',
+                  resolution: result.isMatch ? 'Product verified - No damage' : 'Product mismatch'
+                };
+                userSessions.set(visitorEmail, currentSession);
+                
+                const response = {
                   action: "reply",
-                  replies: [{ text: "❌ Verification results not found. Please try uploading again." }],
-                  suggestions: ["🔄 Return Order", "🏠 Back to Menu"]
-                });
+                  replies: [{
+                    text: `${statusEmoji} **Verification Complete**\n\n` +
+                          `How would you like us to resolve this?`
+                  }],
+                  suggestions: [
+                    "Refund the Amount",
+                    "Replace the Order",
+                    "Back to Menu"
+                  ]
+                };
+                
+                return res.status(200).json(response);
               }
             } catch (error) {
               console.error('❌ Error fetching issue from Firestore:', error);
               return res.status(200).json({
                 action: "reply",
                 replies: [{ text: "❌ Error retrieving verification results. Please try again." }],
-                suggestions: ["🔄 Return Order", "🏠 Back to Menu"]
+                suggestions: ["🔄 Return Order", "Back to Menu"]
               });
             }
           } else {
@@ -3591,7 +3960,7 @@ app.post('/webhook', async (req, res) => {
             return res.status(200).json({
               action: "reply",
               replies: [{ text: "⏰ Verification session expired. Please start a new return request." }],
-              suggestions: ["🔄 Return Order", "🏠 Back to Menu"]
+              suggestions: ["🔄 Return Order", "Back to Menu"]
             });
           }
         } else {
@@ -3599,7 +3968,7 @@ app.post('/webhook', async (req, res) => {
           return res.status(200).json({
             action: "reply",
             replies: [{ text: "📸 No verification results found. Please upload a product image first." }],
-            suggestions: ["🔄 Return Order", "🏠 Back to Menu"]
+            suggestions: ["🔄 Return Order", "Back to Menu"]
           });
         }
       }
@@ -3615,7 +3984,7 @@ app.post('/webhook', async (req, res) => {
                   `A support agent will be with you shortly to assist with your return request.\n\n` +
                   `Please wait while we connect you.`
           }],
-          suggestions: ["🏠 Back to Menu"]
+          suggestions: ["Back to Menu"]
         });
       }
       
@@ -3648,7 +4017,7 @@ app.post('/webhook', async (req, res) => {
               replies: [{
                 text: "You have no orders that can be cancelled.\n\nAll your orders are either delivered or already cancelled."
               }],
-              suggestions: ["🏠 Back to Menu"]
+              suggestions: ["Back to Menu"]
             });
           }
           
@@ -3663,9 +4032,9 @@ app.post('/webhook', async (req, res) => {
           const response = {
             action: "reply",
             replies: [{
-              text: "📋 **Select an order to cancel:**\n\nChoose from your active orders below:"
+              text: "**Select an order to cancel:**\n\nChoose from your active orders below:"
             }],
-            suggestions: [...orderSuggestions, "🏠 Back to Menu"]
+            suggestions: [...orderSuggestions, "Back to Menu"]
           };
           
           console.log('\n✅ Step 4: Order list created');
@@ -3686,7 +4055,7 @@ app.post('/webhook', async (req, res) => {
             replies: [{
               text: "Error loading orders. Please try again later."
             }],
-            suggestions: ["🏠 Back to Menu"]
+            suggestions: ["Back to Menu"]
           });
         }
       }
@@ -3749,69 +4118,64 @@ app.post('/webhook', async (req, res) => {
         const actionEmoji = isCancel ? '❌' : '🔄';
         
         if (isCancel) {
-          console.log('\n📋 Step 9: Checking shipping status from products collection...');
+          console.log('\n📋 Step 9: Checking shipping status from user orders collection...');
           console.log('  - Order ID:', orderId);
           console.log('  - Customer Email:', visitorEmail);
-          console.log('  - Total Products in Order:', order.items?.length || 0);
           
-          // Check shipping status from products collection in Firestore
-          const shippedProducts = [];
+          // Check shipping status from users/{userId}/orders/{orderId} in Firestore
+          let orderShippingStatus = null;
           
-          if (firebaseEnabled && db && order.items && order.items.length > 0) {
-            console.log('\n🔍 Fetching product details from Firestore products collection...');
+          if (firebaseEnabled && db) {
+            console.log('\n🔍 Fetching order shipping status from users/{userId}/orders/{orderId}...');
             
-            for (const item of order.items) {
-              const productId = item.productId || item.id;
-              console.log(`  - Checking product: ${productId}`);
+            try {
+              // Get userId from email
+              const usersSnapshot = await db.collection('users')
+                .where('email', '==', visitorEmail)
+                .limit(1)
+                .get();
               
-              try {
-                const productDoc = await db.collection('products').doc(productId).get();
+              if (!usersSnapshot.empty) {
+                const userId = usersSnapshot.docs[0].id;
+                console.log(`  ✅ Found user ID: ${userId}`);
                 
-                if (productDoc.exists) {
-                  const productData = productDoc.data();
-                  console.log(`    ✅ Found: ${productData.name}`);
-                  console.log(`    📦 Shipping Status: ${productData.shipping_status}`);
-                  
-                  if (productData.shipping_status === 'Shipped' || productData.shipping_status === 'shipped') {
-                    shippedProducts.push({
-                      name: productData.name,
-                      shipping_status: productData.shipping_status,
-                      productId: productId
-                    });
-                    console.log(`    ⚠️ Product is SHIPPED - Cannot cancel!`);
-                  } else {
-                    console.log(`    ✅ Product not shipped - Can cancel`);
-                  }
+                // Get order document
+                const orderDoc = await db.collection('users')
+                  .doc(userId)
+                  .collection('orders')
+                  .doc(orderId)
+                  .get();
+                
+                if (orderDoc.exists) {
+                  const orderData = orderDoc.data();
+                  orderShippingStatus = orderData.shipping_status;
+                  console.log(`  ✅ Order found`);
+                  console.log(`  📦 Shipping Status: ${orderShippingStatus}`);
                 } else {
-                  console.log(`    ⚠️ Product not found in products collection`);
+                  console.log(`  ⚠️ Order not found in users/${userId}/orders/${orderId}`);
                 }
-              } catch (error) {
-                console.error(`    Error fetching product ${productId}:`, error.message);
+              } else {
+                console.log(`  ⚠️ User not found with email: ${visitorEmail}`);
               }
+            } catch (error) {
+              console.error(`  ❌ Error fetching order shipping status:`, error.message);
             }
           }
           
           console.log('\n📊 Shipping Status Summary:');
-          console.log('  - Total Products:', order.items?.length || 0);
-          console.log('  - Shipped Products:', shippedProducts.length);
+          console.log('  - Order Shipping Status:', orderShippingStatus || 'Not found');
           
-          if (shippedProducts.length > 0) {
-            console.log('\n⚠️ Step 10: Products already shipped - Cannot cancel!');
-            console.log('  - Shipped Products:', shippedProducts.map(p => p.name).join(', '));
-            
-            // Build list of shipped products
-            const shippedProductsList = shippedProducts.map(p => 
-              `  • ${p.name} is ${p.shipping_status}`
-            ).join('\n');
+          // Check if order is shipped
+          if (orderShippingStatus && (orderShippingStatus === 'Shipped' || orderShippingStatus === 'shipped' || orderShippingStatus.toLowerCase() === 'shipped')) {
+            console.log('\n⚠️ Step 10: Order already shipped - Cannot cancel!');
             
             const response = {
               action: "reply",
               replies: [{
-                text: `⚠️ **Cannot Cancel Order ${orderId}**\n\n` +
-                      `📦 The following products have already been shipped:\n\n` +
-                      `${shippedProductsList}\n\n` +
-                      `**You cannot cancel this order** as the products are already shipped.\n\n` +
-                      `💬 If you have any queries, please connect with our human support agent by pressing **"Yes"** above.`
+                text: `**Cannot Cancel Order ${orderId}**\n\n` +
+                      `This order has already been shipped.\n\n` +
+                      `Shipping Status: ${orderShippingStatus}\n\n` +
+                      `If you have any queries, please connect with our human support agent by pressing **"Yes"** above.`
               }],
               suggestions: []
             };
@@ -3824,27 +4188,27 @@ app.post('/webhook', async (req, res) => {
             return res.status(200).json(response);
           }
           
-          console.log('\n✅ Step 10: All products not shipped - Proceeding with cancellation...');
+          console.log('\n✅ Step 10: Order not shipped - Proceeding with cancellation...');
+          
+          // Store order context in session for cancel reason selection
+          const cancelSession = userSessions.get(visitorEmail) || {};
+          cancelSession.cancelOrderId = orderId;
+          userSessions.set(visitorEmail, cancelSession);
           
           // Store order context for next step
           const response = {
             action: "reply",
             replies: [{
               text: `**Cancel Order ${orderId}**\n\n` +
-                    `📦 Product: ${order.items?.[0]?.productName || order.items?.[0]?.name || 'Product'}\n` +
-                    `💰 Amount: ₹${order.totalAmount}\n` +
-                    `📊 Status: ${order.status}\n\n` +
-                    `❓ **Why do you want to cancel this order?**\n` +
                     `Please select a reason:`
             }],
             suggestions: [
-              `REASON:${orderId}:changed_my_mind:Changed my mind`,
-              `REASON:${orderId}:better_price:Found better price`,
-              `REASON:${orderId}:ordered_by_mistake:Ordered by mistake`,
-              `REASON:${orderId}:delivery_too_late:Delivery too late`,
-              `REASON:${orderId}:not_needed:Product not needed`,
-              `REASON:${orderId}:other:Other reason`,
-              "🏠 Back to Menu"
+              "Changed my mind",
+              "Found better price",
+              "Ordered by mistake",
+              "Product not needed",
+              "Other reason",
+              "Back to Menu"
             ]
           };
 
@@ -3863,24 +4227,24 @@ app.post('/webhook', async (req, res) => {
           
           console.log('\n✅ Step 10: Proceeding with return - showing reason options...');
           
-          // Show return reason options
+          // Store order context in session for return reason selection
+          const returnSession = userSessions.get(visitorEmail) || {};
+          returnSession.returnOrderId = orderId;
+          userSessions.set(visitorEmail, returnSession);
+          
+          // Show return reason options with simple button names
           const response = {
             action: "reply",
             replies: [{
-              text: `🔄 **Return Order ${orderId}**\n\n` +
-                    `📦 Product: ${order.items?.[0]?.productName || order.items?.[0]?.name || 'Product'}\n` +
-                    `💰 Amount: ₹${order.totalAmount}\n` +
-                    `📊 Status: ${order.status}\n\n` +
-                    `❓ **Why do you want to return this order?**\n` +
+              text: `**Return Order**\n\n` +
                     `Please select a reason:`
             }],
             suggestions: [
-              `RETURN_REASON:${orderId}:defective:Product defective`,
-              `RETURN_REASON:${orderId}:damaged:Product damaged`,
-              `RETURN_REASON:${orderId}:expired:Expired`,
-              `RETURN_REASON:${orderId}:expired:Expired`,
-              `RETURN_REASON:${orderId}:other:Other reason`,
-              "🏠 Back to Menu"
+              "Product defective",
+              "Product damaged",
+              "Expired",
+              "Other reason",
+              "Back to Menu"
             ]
           };
 
@@ -3892,27 +4256,45 @@ app.post('/webhook', async (req, res) => {
         }
       }
 
-      // ✅ HANDLE CANCELLATION REASON SELECTION (Format: REASON:ORD123:reason_code:Display Text)
-      if (messageText.toUpperCase().startsWith('REASON:')) {
+      // ✅ HANDLE CANCELLATION REASON SELECTION (Simple button names)
+      const cancelReasonMap = {
+        'changed my mind': 'changed_my_mind',
+        'found better price': 'better_price',
+        'ordered by mistake': 'ordered_by_mistake',
+        'delivery too late': 'delivery_too_late',
+        'product not needed': 'not_needed',
+        'other reason': 'other'
+      };
+      
+      const cancelLowerMessage = messageText.toLowerCase();
+      const matchedCancelReason = cancelReasonMap[cancelLowerMessage];
+      
+      if (matchedCancelReason) {
         console.log('\n💬 Cancellation reason received:', messageText);
         
-        // Parse: REASON:ORD123:changed_my_mind:Changed my mind
-        const parts = messageText.split(':');
-        if (parts.length < 4) {
+        // Get order context from session
+        const cancelReasonSession = userSessions.get(visitorEmail);
+        
+        if (!cancelReasonSession || !cancelReasonSession.cancelOrderId) {
           return res.status(200).json({
             action: "reply",
-            replies: [{ text: "Invalid selection. Please try again." }],
-            suggestions: ["🏠 Back to Menu"]
+            replies: [{ text: "Session expired. Please start again." }],
+            suggestions: ["Cancel Order", "Back to Menu"]
           });
         }
         
-        const orderId = parts[1].toUpperCase();
-        const reasonCode = parts[2];
-        const reasonDisplay = parts.slice(3).join(':');
+        const orderId = cancelReasonSession.cancelOrderId;
+        const reasonCode = matchedCancelReason;
+        const reasonDisplay = messageText;
         
         console.log('  Order ID:', orderId);
         console.log('  Reason Code:', reasonCode);
         console.log('  Reason Display:', reasonDisplay);
+        
+        // Store context in session for refund method selection
+        cancelReasonSession.cancelReasonCode = reasonCode;
+        cancelReasonSession.cancelReasonDisplay = reasonDisplay;
+        userSessions.set(visitorEmail, cancelReasonSession);
         
         // Show refund method options
         const response = {
@@ -3921,8 +4303,8 @@ app.post('/webhook', async (req, res) => {
             text: `How would you like to receive your refund?`
           }],
           suggestions: [
-            `REFUND:${orderId}:${reasonCode}:original_payment:RazonPay`,
-            "🏠 Back to Menu"
+            "Refund",
+            "Back to Menu"
           ]
         };
         
@@ -3932,24 +4314,25 @@ app.post('/webhook', async (req, res) => {
         return res.status(200).json(response);
       }
       
-      // ✅ HANDLE REFUND METHOD SELECTION AND PROCESS CANCELLATION (Format: REFUND:ORD123:reason_code:refund_method:Display Text)
-      if (messageText.toUpperCase().startsWith('REFUND:')) {
+      // ✅ HANDLE REFUND METHOD SELECTION (Simple button: "RazonPay")
+      if (messageText.toLowerCase() === 'Refund' || messageText === 'refund') {
         console.log('\n💳 Refund method received:', messageText);
         
-        // Parse: REFUND:ORD123:changed_my_mind:original_payment:Original Payment Method
-        const parts = messageText.split(':');
-        if (parts.length < 5) {
+        // Get order context from session
+        const session = userSessions.get(visitorEmail);
+        
+        if (!session || !session.cancelOrderId || !session.cancelReasonCode) {
           return res.status(200).json({
             action: "reply",
-            replies: [{ text: "Invalid selection. Please try again." }],
-            suggestions: ["🏠 Back to Menu"]
+            replies: [{ text: "Session expired. Please start again." }],
+            suggestions: ["Cancel Order", "Back to Menu"]
           });
         }
         
-        const orderId = parts[1].toUpperCase();
-        const reasonCode = parts[2];
-        const refundMethod = parts[3];
-        const refundDisplay = parts.slice(4).join(':');
+        const orderId = session.cancelOrderId;
+        const reasonCode = session.cancelReasonCode;
+        const refundMethod = 'original_payment';
+        const refundDisplay = 'Refund';
         
         console.log('  Order ID:', orderId);
         console.log('  Reason Code:', reasonCode);
@@ -3973,7 +4356,7 @@ app.post('/webhook', async (req, res) => {
           return res.status(200).json({
             action: "reply",
             replies: [{ text: "Order not found. Please try again." }],
-            suggestions: ["🏠 Back to Menu"]
+            suggestions: ["Back to Menu"]
           });
         }
         
@@ -3998,7 +4381,7 @@ app.post('/webhook', async (req, res) => {
         console.log('✅ processCancellation completed:', result);
         
         if (result.success) {
-          const successMessage = `✅ Successfully submitted your cancellation request!\n\n🆔 Order ID: ${order.id}\n📦 Product: ${order.items?.[0]?.productName || 'Product'}\n💰 Amount: ₹${order.totalAmount}\n💳 Payment Method: ${order.paymentMethod || 'N/A'}\n📄 Reference: ${result.refundReference}\n🔁 Refund Method: ${cancellationData.refund_method.replace('_', ' ').toUpperCase()}\n\n👆 To continue with the process and connect with a human agent, please press **"Yes"** above.`;
+          const successMessage = `**Successfully submitted your cancellation request!**\n\nOrder ID: ${order.id}\nProduct: ${order.items?.[0]?.productName || 'Product'}\nAmount: ₹${order.totalAmount}\nPayment Method: ${order.paymentMethod || 'N/A'}\nReference: ${result.refundReference}\nRefund Method: ${cancellationData.refund_method.replace('_', ' ').toUpperCase()}\n\nTo continue with the process and connect with a human agent, please press **"Yes"** above.`;
           
           console.log('📤 Sending success response...');
           return res.status(200).json({
@@ -4014,7 +4397,7 @@ app.post('/webhook', async (req, res) => {
           return res.status(200).json({
             action: "reply",
             replies: [{ text: `Failed to submit cancellation request: ${result.message || result.error}` }],
-            suggestions: ["🏠 Back to Menu"]
+            suggestions: ["Back to Menu"]
           });
         }
       }
@@ -4043,7 +4426,7 @@ app.post('/webhook', async (req, res) => {
           return res.status(200).json({
             action: "reply",
             replies: [{ text: "Session expired. Please start again." }],
-            suggestions: ["🔄 Return Order", "🏠 Back to Menu"]
+            suggestions: ["🔄 Return Order", "Back to Menu"]
           });
         }
         
@@ -4088,17 +4471,14 @@ app.post('/webhook', async (req, res) => {
           const response = {
             action: "reply",
             replies: [{
-              text: `📅 **Expiry Date Verification Required**\n\n` +
-                    `Product: ${productName}\n` +
-                    `Amount: ₹${order.totalAmount}\n` +
-                    `Reason: ${reasonDisplay}\n\n` +
-                    `Please upload a photo of the product showing the expiry date.\n\n` +
-                    `Our AI will extract and verify the expiry date automatically.\n\n` +
-                    `👉 Click the link below to upload:\n${expiryUploadUrl}`
+              text: `**Expiry Date Verification Required**\n\n` +
+                    `Please upload a photo of the product showing the expiry date to verify automatically.\n\n` +
+                    `Click the link below to upload:\n${expiryUploadUrl}\n\n`+
+                    `After the verification, you need to press "Check Expiry Results" to proceed next step.`
             }],
             suggestions: [
-              "📊 Check Expiry Results",
-              "🏠 Back to Menu"
+              "Check Expiry Results",
+              "Back to Menu"
             ]
           };
           
@@ -4117,15 +4497,11 @@ app.post('/webhook', async (req, res) => {
           const response = {
             action: "reply",
             replies: [{
-              text: `⚠️ **Oops!.. Let's connect with a human**\n\n` +
-                    `📦 Order: ${order.id}\n` +
-                    `📝 Reason: ${reasonDisplay}\n\n` +
+              text: `**Oops!.. Let's connect with a human**\n\n` +
                     `This type of return requires assistance from our support team.\n\n` +
                     `Press "Yes" below to connect with a human agent.`
             }],
             suggestions: [
-              "Yes",
-              "🏠 Back to Menu"
             ]
           };
           
@@ -4160,16 +4536,15 @@ app.post('/webhook', async (req, res) => {
         const response = {
           action: "reply",
           replies: [{
-            text: `📸 **Product Verification Required**\n\n` +
-                  `Product: ${productName}\n` +
-                  `Amount: ₹${order.totalAmount}\n` +
-                  `Reason: ${reasonDisplay}\n\n` +
+            text: `**Product Verification Required**\n\n` +
                   `Please upload a photo of the product to verify your return request.\n\n` +
-                  `👉 Click the link below to upload:\n${uploadUrl}`
+                  `Click the link below to upload:\n${uploadUrl}\n\n` +
+                  `After the verification, you need to press "Show Verification Results" to proceed next step.`
+                  
           }],
           suggestions: [
-            "📊 Show Verification Results",
-            "🏠 Back to Menu"
+            "Show Verification Results",
+            "Back to Menu"
           ]
         };
         
@@ -4182,23 +4557,34 @@ app.post('/webhook', async (req, res) => {
         return res.status(200).json(response);
       }
       
-      // ✅ HANDLE RETURN REASON SELECTION (Format: RETURN_REASON:ORD123:reason_code:Display Text)
-      if (messageText.toUpperCase().startsWith('RETURN_REASON:')) {
+      // ✅ HANDLE RETURN REASON SELECTION (Simple button names)
+      const returnReasonMap = {
+        'product defective': 'defective',
+        'product damaged': 'damaged',
+        'expired': 'expired',
+        'other reason': 'other'
+      };
+      
+      const returnLowerMessage = messageText.toLowerCase();
+      const matchedReturnReason = returnReasonMap[returnLowerMessage];
+      
+      if (matchedReturnReason) {
         console.log('\n💬 Return reason received:', messageText);
         
-        // Parse: RETURN_REASON:ORD123:defective:Product defective
-        const parts = messageText.split(':');
-        if (parts.length < 4) {
+        // Get order context from session
+        const returnReasonSession = userSessions.get(visitorEmail);
+        
+        if (!returnReasonSession || !returnReasonSession.returnOrderId) {
           return res.status(200).json({
             action: "reply",
-            replies: [{ text: "Invalid selection. Please try again." }],
-            suggestions: ["🏠 Back to Menu"]
+            replies: [{ text: "Session expired. Please start again." }],
+            suggestions: ["Return Order", "Back to Menu"]
           });
         }
         
-        const orderId = parts[1].toUpperCase();
-        const reasonCode = parts[2];
-        const reasonDisplay = parts.slice(3).join(':');
+        const orderId = returnReasonSession.returnOrderId;
+        const reasonCode = matchedReturnReason;
+        const reasonDisplay = messageText;
         
         console.log('  Order ID:', orderId);
         console.log('  Reason Code:', reasonCode);
@@ -4208,17 +4594,22 @@ app.post('/webhook', async (req, res) => {
         if (reasonCode === 'expired' || reasonCode === 'expired') {
           console.log('📅 Expired reason selected - showing expiry verification upload');
           
-          // Get session to find order details
-          const session = userSessions.get(visitorEmail);
-          if (!session || !session.currentOrder) {
+          // Check if currentOrder exists in session
+          if (!returnReasonSession.currentOrder) {
             return res.status(200).json({
               action: "reply",
               replies: [{ text: "Session expired. Please start again." }],
-              suggestions: ["🔄 Return Order", "🏠 Back to Menu"]
+              suggestions: ["🔄 Return Order", "Back to Menu"]
             });
           }
           
-          const order = session.currentOrder;
+          // ✅ INITIALIZE expiry_verify = false when expired reason is selected
+          returnReasonSession.expiry_verify = false;
+          returnReasonSession.selectedReason = reasonCode;
+          returnReasonSession.selectedReasonDisplay = reasonDisplay;
+          console.log('🔒 expiry_verify initialized to FALSE for order:', orderId);
+          
+          const order = returnReasonSession.currentOrder;
           const productName = order.items?.[0]?.productName || order.items?.[0]?.name || 'Product';
           const productId = order.items?.[0]?.productId || order.items?.[0]?.id || 'unknown';
           const imageUrl = order.items?.[0]?.imageUrl || '';
@@ -4232,17 +4623,14 @@ app.post('/webhook', async (req, res) => {
           const response = {
             action: "reply",
             replies: [{
-              text: `📅 **Expiry Date Verification Required**\n\n` +
-                    `Product: ${productName}\n` +
-                    `Amount: ₹${order.totalAmount}\n` +
-                    `Reason: ${reasonDisplay}\n\n` +
-                    `Please upload a photo of the product showing the expiry date.\n\n` +
-                    `Our AI will extract and verify the expiry date automatically.\n\n` +
-                    `👉 Click the link below to upload:\n${expiryUploadUrl}`
+              text: `**Expiry Date Verification Required**\n\n` +
+                    `Please upload a photo of the product showing the expiry date to verify automatically.\n\n` +
+                    `Click the link below to upload:\n${expiryUploadUrl}\n\n`+
+                    `After the verification, you need to press "Check Expiry Results" to proceed next step.`
             }],
             suggestions: [
-              "📊 Check Expiry Results",
-              "🏠 Back to Menu"
+              "Check Expiry Results",
+              "Back to Menu"
             ]
           };
           
@@ -4261,15 +4649,11 @@ app.post('/webhook', async (req, res) => {
           const response = {
             action: "reply",
             replies: [{
-              text: `⚠️ **Oops!.. Let's connect with a human**\n\n` +
-                    `📦 Order: ${orderId}\n` +
-                    `📝 Reason: ${reasonDisplay}\n\n` +
+              text: `**Oops!.. Let's connect with a human**\n\n` +
                     `This type of return requires assistance from our support team.\n\n` +
                     `Press "Yes" below to connect with a human agent.`
             }],
             suggestions: [
-              "Yes",
-              "🏠 Back to Menu"
             ]
           };
           
@@ -4279,115 +4663,212 @@ app.post('/webhook', async (req, res) => {
           return res.status(200).json(response);
         }
         
-        // Show refund method options for automated reasons (defective, damaged)
+        // ✅ INITIALIZE product_verify = false when reason is selected
+        const session = userSessions.get(visitorEmail);
+        if (session) {
+          session.product_verify = false;
+          session.selectedReason = reasonCode;
+          session.selectedReasonDisplay = reasonDisplay;
+          console.log('🔒 product_verify initialized to FALSE for order:', orderId);
+        }
+        
+        // Generate product verification upload URL
+        const ngrokUrl = BASE_URL;
+        const order = session?.currentOrder;
+        const productName = order?.items?.[0]?.productName || order?.items?.[0]?.name || 'Product';
+        const productId = order?.items?.[0]?.productId || order?.items?.[0]?.id || 'unknown';
+        const imageUrl = order?.items?.[0]?.imageUrl || '';
+        
+        const uploadUrl = `${ngrokUrl}/upload-form.html?email=${encodeURIComponent(visitorEmail)}&orderId=${encodeURIComponent(orderId)}&productId=${encodeURIComponent(productId)}&imageUrl=${encodeURIComponent(imageUrl)}`;
+        
+        console.log('📸 Generated product verification upload URL:', uploadUrl);
+        
+        // Show product verification upload for automated reasons (defective, damaged)
         const response = {
           action: "reply",
           replies: [{
-            text: `💳 **Select Refund Method**\n\n` +
-                  `📦 Order: ${orderId}\n` +
-                  `📝 Reason: ${reasonDisplay}\n\n` +
-                  `How would you like to receive your refund?`
+            text: `**Product Verification Required**\n\n` +
+                  `Please upload a photo of the product to verify your return request.\n\n` +
+                  `Click the link below to upload:\n${uploadUrl}\n\n` +
+                  `After the verification, you need to press "Show Verification Results" to proceed next step.`
+                  
           }],
           suggestions: [
-            `RETURN_REFUND:${orderId}:${reasonCode}:original_payment:Original Payment Method`,
-            `RETURN_REFUND:${orderId}:${reasonCode}:store_credit:Store Credit`,
-            `RETURN_REFUND:${orderId}:${reasonCode}:bank_transfer:Bank Transfer`,
-            "🏠 Back to Menu"
+            "Show Verification Results",
+            "Back to Menu"
           ]
         };
         
-        console.log('\n✅ Refund method options created');
+        console.log('\n✅ Product verification request created');
         console.log('📤 Sending response:', JSON.stringify(response, null, 2));
         
         return res.status(200).json(response);
       }
       
-      // ✅ HANDLE CLEAN REFUND SELECTION: Direct text matching
-      const refundTextMap = {
-        'original payment method': 'original_payment',
-        'store credit': 'store_credit',
-        'bank transfer': 'bank_transfer'
-      };
-      
-      const matchedRefund = Object.keys(refundTextMap).find(key => lowerMessage === key);
-      
-      if (matchedRefund) {
-        console.log('\n💳 Return refund method received:', messageText);
+      // 🔄 HANDLE "REPLACE THE ORDER" OPTION
+      if (messageText.toLowerCase().includes('replace the order') || 
+          lowerMessage === '🔄 replace the order') {
+        console.log('\n🔄 Replace the Order selected');
         
-        const refundMethod = refundTextMap[matchedRefund];
-        const refundDisplay = messageText;
-        
-        // Get order and reason from session
         const session = userSessions.get(visitorEmail);
-        if (!session || !session.currentOrder || !session.selectedReason) {
+        
+        if (!session || !session.currentIssue) {
           return res.status(200).json({
             action: "reply",
             replies: [{ text: "Session expired. Please start again." }],
-            suggestions: ["🔄 Return Order", "🏠 Back to Menu"]
+            suggestions: ["🔄 Return Order", "Back to Menu"]
           });
         }
         
-        const order = session.currentOrder;
-        const orderId = order.id;
-        const reasonCode = session.selectedReason;
-        const reasonDisplay = session.selectedReasonDisplay;
-        
-        console.log('  Order ID:', orderId);
-        console.log('  Reason Code:', reasonCode);
-        console.log('  Refund Method:', refundMethod);
-        console.log('  Refund Display:', refundDisplay);
+        const issue = session.currentIssue;
         
         try {
-          // Process the return
-          const reasonDisplayMap = {
-            'defective': 'Product defective',
-            'damaged': 'Product damaged',
-            'expired': 'Expired',
-            'other': 'Other reason'
+          // Delete the issue from Firestore
+          await db.collection('issues').doc(issue.issueId || issue.id).delete();
+          console.log('✅ Issue deleted from Firestore:', issue.issueId || issue.id);
+          
+          // Clear session data
+          delete session.currentIssue;
+          
+          const response = {
+            action: "reply",
+            replies: [{
+              text: `**Request Accepted**\n\n` +
+                    `**Order Details:**\n` +
+                    `Product: ${issue.productName}\n` +
+                    `Order ID: ${issue.orderId}\n` +
+                    `Amount: ₹${issue.amount}\n\n` +
+                    `**Replacement Order:**\n` +
+                    `Your request for order replacement has been accepted!\n\n` +
+                    `We will process your replacement order and send you a new product.\n\n` +
+                    `If you have any queries, press "Yes" to connect with a human agent.`
+            }],
+            suggestions: [
+            ]
           };
-          const reasonDisplayName = reasonDisplayMap[reasonCode] || reasonCode;
-          await saveIssueToFirestore({
-            id: `RETURN_${Date.now()}`,
-            customerEmail: visitorEmail,
-            orderId: orderId,
-            issueType: 'Order Return',
-            description: `Customer requested order return. Reason: ${reasonDisplayName}`,
-            status: 'Pending Review',
-            resolution: `Awaiting human agent review. Reference: RET_${orderId}_${Date.now()}`,
-            returnReason: reasonCode,
-            returnReasonDisplay: reasonDisplayName,
-            refundMethod: refundMethod,
-            refundMethodDisplay: refundDisplay.toLowerCase(),
-            returnReference: `RET_${orderId}_${Date.now()}`,
-            amount: order.totalAmount || 0,
-            paymentMethod: order.paymentMethod || 'N/A',
-            source: 'salesiq_chat'
-          });
           
-          // Clear session
-          userSessions.delete(visitorEmail);
-          
-          return res.status(200).json({
-            action: "reply",
-            replies: [{
-              text: `✅ **Return Request Submitted**\n\n` +
-                    `Your return request has been submitted successfully!\n\n` +
-                    `📦 Product: ${order.items?.[0]?.productName || 'Product'}\n` +
-                    `💰 Amount: ₹${order.totalAmount}\n` +
-                    `📝 Reason: ${reasonDisplayName}\n` +
-                    `💳 Refund Method: ${refundDisplay}\n\n` +
-                    `Our team will review your request and contact you soon.`
-            }],
-            suggestions: ["🏠 Back to Menu"]
-          });
+          console.log('✅ Replacement order accepted');
+          return res.status(200).json(response);
         } catch (error) {
-          console.error('Error processing return:', error);
+          console.error('❌ Error processing replacement:', error);
           return res.status(200).json({
             action: "reply",
+            replies: [{ text: "❌ Error processing replacement. Please try again." }],
+            suggestions: ["Back to Menu"]
+          });
+        }
+      }
+      
+      // 💰 HANDLE "REFUND THE AMOUNT" OPTION
+      if (messageText.toLowerCase().includes('refund the amount') || 
+          lowerMessage === '💰 refund the amount') {
+        console.log('\n💰 Refund the Amount selected');
+        
+        const session = userSessions.get(visitorEmail);
+        
+        if (!session || !session.currentIssue) {
+          return res.status(200).json({
+            action: "reply",
+            replies: [{ text: "Session expired. Please start again." }],
+            suggestions: ["🔄 Return Order", "Back to Menu"]
+          });
+        }
+        
+        const issue = session.currentIssue;
+        const expiryInfo = issue.expiryVerification || {};
+        const productInfo = issue.productVerification || {};
+        
+        // Store refund pending flag in session
+        session.pendingRefund = true;
+        session.refundIssue = issue;
+        
+        const response = {
+          action: "reply",
+          replies: [{
+            text: `**Refund Request**\n\n` +
+                  `**Complete Order Details:**\n` +
+                  `Product: ${issue.productName}\n` +
+                  `Order ID: ${issue.orderId}\n` +
+                  `Product ID: ${issue.productId || 'N/A'}\n` +
+                  `Amount: ₹${issue.amount}\n\n` +
+                  `Expiry Date: ${expiryInfo.expiryDate || 'N/A'}\n` +
+                  `Current Date: ${expiryInfo.currentDate || 'N/A'}\n` +
+                  `Status: ${expiryInfo.isExpired ? 'EXPIRED ✅' : 'NOT EXPIRED'}\n` +
+                  `Product Match: ${productInfo.isMatch ? 'YES ✅' : 'NO'}\n` +
+                  `Damage Detected: ${productInfo.damageDetected ? 'YES ⚠️' : 'NO'}\n` +
+                  `Confidence: ${productInfo.confidence || 0}%\n\n` +
+                  `Issue ID: ${issue.issueId || issue.id}\n` +
+                  `Issue Type: ${issue.issueType || 'Expired product'}\n` +
+                  `Status: ${issue.status}\n` +
+                  `Resolution: ${issue.resolution}\n` +
+                  `Priority: ${issue.priority || 'High'}\n\n` +
+                  `Refund Amount: ₹${issue.amount}\n` +
+                  `Check the above Detail Carefully, Payment will be processed within 1 business day\n\n` +
+                  `Press "Yes" to confirm and process the refund.`
+          }],
+          suggestions: [
+          ]
+        };
+        
+        console.log('💰 Refund details displayed, waiting for confirmation');
+        return res.status(200).json(response);
+      }
+      
+      // ✅ HANDLE "YES" CONFIRMATION FOR REFUND
+      if (messageText.toLowerCase() === 'yes' && session && session.pendingRefund) {
+        console.log('\n✅ Yes - Refund confirmation received');
+        
+        const issue = session.refundIssue;
+        
+        if (!issue) {
+          return res.status(200).json({
+            action: "reply",
+            replies: [{ text: "Session expired. Please start again." }],
+            suggestions: ["🔄 Return Order", "Back to Menu"]
+          });
+        }
+        
+        try {
+          // Update issue status in Firestore
+          await db.collection('issues').doc(issue.issueId || issue.id).update({
+            status: 'Refund Approved',
+            resolution: 'Refund will be processed within 1 business day',
+            refundApprovedAt: admin.firestore.FieldValue.serverTimestamp(),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp()
+          });
+          console.log('✅ Issue updated with refund approval');
+          
+          // Clear session data
+          delete session.pendingRefund;
+          delete session.refundIssue;
+          delete session.currentIssue;
+          
+          const response = {
+            action: "reply",
             replies: [{
-              text: "Failed to process return request. Please try again or contact support."
+              text: `**Refund Approved**\n\n` +
+                    `**Order Details:**\n` +
+                    `Product: ${issue.productName}\n` +
+                    `Order ID: ${issue.orderId}\n` +
+                    `Amount: ₹${issue.amount}\n\n` +
+                    `Status: APPROVED\n` +
+                    `Amount: ₹${issue.amount}\n` +
+                    `Check the above Detail Carefully, Payment will be processed within 1 business day\n\n` +
+                    `Press "Yes" to confirm and process the refund.`
             }],
-            suggestions: ["🏠 Back to Menu", "📞 Contact Support"]
+            suggestions: [
+              "Back to Menu"
+            ]
+          };
+          
+          console.log('✅ Refund approved and processed');
+          return res.status(200).json(response);
+        } catch (error) {
+          console.error('❌ Error processing refund:', error);
+          return res.status(200).json({
+            action: "reply",
+            replies: [{ text: "❌ Error processing refund. Please try again." }],
+            suggestions: ["Back to Menu"]
           });
         }
       }
@@ -4402,7 +4883,7 @@ app.post('/webhook', async (req, res) => {
           return res.status(200).json({
             action: "reply",
             replies: [{ text: "Invalid selection. Please try again." }],
-            suggestions: ["🏠 Back to Menu"]
+            suggestions: ["Back to Menu"]
           });
         }
         
@@ -4426,7 +4907,7 @@ app.post('/webhook', async (req, res) => {
             return res.status(200).json({
               action: "reply",
               replies: [{ text: "Order not found. Please try again." }],
-              suggestions: ["🏠 Back to Menu"]
+              suggestions: ["Back to Menu"]
             });
           }
           
@@ -4533,7 +5014,7 @@ app.post('/webhook', async (req, res) => {
                 }
               ]
             }],
-            suggestions: ["🏠 Back to Menu"]
+            suggestions: ["Back to Menu"]
           });
         } catch (error) {
           console.error('Error processing return:', error);
@@ -4542,7 +5023,7 @@ app.post('/webhook', async (req, res) => {
             replies: [{
               text: "Failed to process return request. Please try again or contact support."
             }],
-            suggestions: ["🏠 Back to Menu", "📞 Contact Support"]
+            suggestions: ["Back to Menu", "📞 Contact Support"]
           });
         }
       }
@@ -4641,7 +5122,7 @@ app.post('/webhook', async (req, res) => {
               replies: [{
                 text: "You have no delivered orders that can be returned.\n\nOnly delivered orders are eligible for return."
               }],
-              suggestions: ["🏠 Back to Menu"]
+              suggestions: ["Back to Menu"]
             };
             console.log('📤 Response:', JSON.stringify(noOrdersResponse, null, 2));
             return res.status(200).json(noOrdersResponse);
@@ -4670,7 +5151,7 @@ app.post('/webhook', async (req, res) => {
             replies: [{
               text: `Click on any order below to proceed with the return process.`
             }],
-            suggestions: [...orderSuggestions, "🏠 Back to Menu"]
+            suggestions: [...orderSuggestions, "Back to Menu"]
           };
           
           console.log('\n✅ Step 5: Delivered order list created');
@@ -4692,7 +5173,7 @@ app.post('/webhook', async (req, res) => {
             replies: [{
               text: "Error loading orders. Please try again later."
             }],
-            suggestions: ["🏠 Back to Menu"]
+            suggestions: ["Back to Menu"]
           });
         }
       }
@@ -4737,7 +5218,7 @@ app.post('/webhook', async (req, res) => {
               return res.status(200).json({
                 action: "reply",
                 replies: [{ text: "Invalid selection. Please try again." }],
-                suggestions: ["🔄 Return Order", "🏠 Back to Menu"]
+                suggestions: ["🔄 Return Order", "Back to Menu"]
               });
             }
             
@@ -4762,7 +5243,7 @@ app.post('/webhook', async (req, res) => {
                 "Product damaged",
                 "Expired",
                 "Other reason",
-                "🏠 Back to Menu"
+                "Back to Menu"
               ]
             };
             
@@ -4772,7 +5253,7 @@ app.post('/webhook', async (req, res) => {
             return res.status(200).json({
               action: "reply",
               replies: [{ text: "Error processing selection. Please try again." }],
-              suggestions: ["🏠 Back to Menu"]
+              suggestions: ["Back to Menu"]
             });
           }
         }
@@ -4824,7 +5305,7 @@ app.post('/webhook', async (req, res) => {
                 replies: [{
                   text: "❌ Order not found. Please try again."
                 }],
-                suggestions: ["🔄 Return Order", "🏠 Back to Menu"]
+                suggestions: ["🔄 Return Order", "Back to Menu"]
               });
             }
           }
@@ -4839,7 +5320,7 @@ app.post('/webhook', async (req, res) => {
         return res.status(200).json(otherResponse);
       }
       
-      if (messageText === "🏠 back to menu" || messageText.includes("back to menu")) {
+      if (messageText === "back to menu" || messageText.includes("back to menu")) {
         // Return to main menu
         const buttonMessage = createAutoActionButtonsMessage(visitorInfoForQuery);
         const response = {
@@ -4855,9 +5336,9 @@ app.post('/webhook', async (req, res) => {
         action: "reply",
         replies: [buttonMessage],
         suggestions: [
-          "🔄 Return Order",
-          "❌ Cancel Order",
-          "💬 Other Issue"
+          "Return Order",
+          "Cancel Order",
+          "Other Issue"
         ]
       };
       
@@ -4925,9 +5406,9 @@ app.post('/webhook', async (req, res) => {
         const response = {
           action: "reply",
           replies: [{
-            text: "🔄 **Return Order**\n\nPlease type 'Return Order' to see your delivered orders."
+            text: "**Return Order**\n\nPlease type 'Return Order' to see your delivered orders."
           }],
-          suggestions: ["Return Order", "🏠 Back to Menu"]
+          suggestions: ["Return Order", "Back to Menu"]
         };
         return res.status(200).json(response);
       }
@@ -4937,9 +5418,9 @@ app.post('/webhook', async (req, res) => {
         const response = {
           action: "reply",
           replies: [{
-            text: "❌ **Cancel Order**\n\nPlease type 'Cancel Order' to see your pending orders."
+            text: "**Cancel Order**\n\nPlease type 'Cancel Order' to see your pending orders."
           }],
-          suggestions: ["Cancel Order", "🏠 Back to Menu"]
+          suggestions: ["Cancel Order", "Back to Menu"]
         };
         return res.status(200).json(response);
       }
@@ -4949,9 +5430,9 @@ app.post('/webhook', async (req, res) => {
         const response = {
           action: "reply",
           replies: [{
-            text: "📦 **Track Order**\n\nPlease provide your order ID to track its status."
+            text: "**Track Order**\n\nPlease provide your order ID to track its status."
           }],
-          suggestions: ["🏠 Back to Menu"]
+          suggestions: ["Back to Menu"]
         };
         return res.status(200).json(response);
       }
@@ -4961,13 +5442,11 @@ app.post('/webhook', async (req, res) => {
         const response = {
           action: "reply",
           replies: [{
-            text: "📸 **Upload Product Image**\n\n" +
-                  "Please use the 📎 attachment icon below to:\n" +
-                  "1️⃣ Take a photo with your camera\n" +
-                  "2️⃣ Or select from gallery\n\n" +
+            text: "**Upload Product Image**\n\n" +
+                  "1️Take a photo with your only by camera\n" +
                   "The AI will analyze your image instantly!"
           }],
-          suggestions: ["🏠 Back to Menu"]
+          suggestions: ["Back to Menu"]
         };
         return res.status(200).json(response);
       }
@@ -4976,9 +5455,9 @@ app.post('/webhook', async (req, res) => {
         const response = {
           action: "reply",
           replies: [{
-            text: "💬 **Other Issue**\n\nPlease describe your issue and our support team will assist you."
+            text: "**Other Issue**\n\nPlease describe your issue and our support team will assist you."
           }],
-          suggestions: ["🏠 Back to Menu", "📞 Contact Support"]
+          suggestions: ["Back to Menu"]
         };
         return res.status(200).json(response);
       }
@@ -5039,7 +5518,7 @@ app.post('/webhook', async (req, res) => {
               replies: [{
                 text: "Order not found. Please try again."
               }],
-              suggestions: ["🏠 Back to Menu"]
+              suggestions: ["Back to Menu"]
             });
           }
           
@@ -5079,7 +5558,7 @@ app.post('/webhook', async (req, res) => {
                     `🔗 ${uploadUrl}\n\n` +
                     `Or use the 📎 attachment icon below to upload directly.`
             }],
-            suggestions: ["🏠 Back to Menu", "📞 Contact Support"]
+            suggestions: ["Back to Menu", "📞 Contact Support"]
           });
         } catch (error) {
           console.error('Error processing cancellation:', error);
@@ -5088,7 +5567,7 @@ app.post('/webhook', async (req, res) => {
             replies: [{
               text: "Failed to process cancellation. Please try again or contact support."
             }],
-            suggestions: ["🏠 Back to Menu", "📞 Contact Support"]
+            suggestions: ["Back to Menu", "📞 Contact Support"]
           });
         }
       }
@@ -5113,7 +5592,7 @@ app.post('/webhook', async (req, res) => {
               replies: [{
                 text: "Order not found. Please try again."
               }],
-              suggestions: ["🏠 Back to Menu"]
+              suggestions: ["Back to Menu"]
             });
           }
           
@@ -5156,7 +5635,7 @@ app.post('/webhook', async (req, res) => {
                       `Your refund will be processed within 5-7 business days.\n` +
                       `The order has been removed from your account.`
               }],
-              suggestions: ["🏠 Back to Menu", "📞 Contact Support"]
+              suggestions: ["Back to Menu", "📞 Contact Support"]
             });
           } else {
             return res.status(200).json({
@@ -5164,7 +5643,7 @@ app.post('/webhook', async (req, res) => {
               replies: [{
                 text: `Failed to cancel order: ${result.message || result.error}`
               }],
-              suggestions: ["🏠 Back to Menu", "📞 Contact Support"]
+              suggestions: ["Back to Menu", "📞 Contact Support"]
             });
           }
         } catch (error) {
@@ -5174,7 +5653,7 @@ app.post('/webhook', async (req, res) => {
             replies: [{
               text: "Failed to cancel order. Please try again or contact support."
             }],
-            suggestions: ["🏠 Back to Menu", "📞 Contact Support"]
+            suggestions: ["Back to Menu", "📞 Contact Support"]
           });
         }
       }
@@ -5248,7 +5727,7 @@ app.post('/webhook', async (req, res) => {
             replies: [{
               text: "Invalid issue format. Please try again."
             }],
-            suggestions: ["🏠 Back to Menu"]
+            suggestions: ["Back to Menu"]
           });
         }
         
@@ -5277,7 +5756,7 @@ app.post('/webhook', async (req, res) => {
                       `The order and cancellation request have been removed from your account.\n` +
                       `If you need further assistance, please contact support.`
               }],
-              suggestions: ["🏠 Back to Menu", "📞 Contact Support"]
+              suggestions: ["Back to Menu", "📞 Contact Support"]
             });
           } else {
             console.log('Failed to delete:', deleteResult.message);
@@ -5286,7 +5765,7 @@ app.post('/webhook', async (req, res) => {
               replies: [{
                 text: `Failed to remove issue: ${deleteResult.message || 'Unknown error'}`
               }],
-              suggestions: ["🏠 Back to Menu", "📞 Contact Support"]
+              suggestions: ["Back to Menu", "📞 Contact Support"]
             });
           }
         } catch (error) {
@@ -5296,7 +5775,7 @@ app.post('/webhook', async (req, res) => {
             replies: [{
               text: "Failed to remove issue. Please try again or contact support."
             }],
-            suggestions: ["🏠 Back to Menu", "📞 Contact Support"]
+            suggestions: ["Back to Menu", "📞 Contact Support"]
           });
         }
       }
@@ -6259,6 +6738,16 @@ app.post('/api/upload-verify-expiry', upload.single('image'), async (req, res) =
         userSessions.set(cleanEmail, {});
       }
       const session = userSessions.get(cleanEmail);
+      
+      // ✅ SET expiry_verify = true ONLY if product is expired
+      if (expiryResult.isExpired) {
+        session.expiry_verify = true;
+        console.log('✅ expiry_verify set to TRUE - Product is expired');
+      } else {
+        session.expiry_verify = false;
+        console.log('❌ expiry_verify remains FALSE - Product is not expired');
+      }
+      
       session.pendingExpiryVerification = {
         issueId: issueId,
         type: 'expiry_verification',
@@ -6285,6 +6774,7 @@ app.post('/api/upload-verify-expiry', upload.single('image'), async (req, res) =
       
       console.log('💾 Stored pending expiry verification in session');
       console.log('✅ Issue Type included:', session.pendingExpiryVerification.issueType);
+      console.log('  expiry_verify:', session.expiry_verify);
       
       return res.json({
         success: true,
@@ -6640,6 +7130,15 @@ app.post('/api/upload-verify-image', upload.single('image'), async (req, res) =>
       // Store pending product verification (will save to Firestore when user confirms)
       session.pendingProductVerification = issueData;
       
+      // ✅ SET product_verify = true ONLY if product matches
+      if (analysisResult.isMatch) {
+        session.product_verify = true;
+        console.log('✅ product_verify set to TRUE - Product matched successfully');
+      } else {
+        session.product_verify = false;
+        console.log('❌ product_verify remains FALSE - Product did not match');
+      }
+      
       session.verificationResult = {
         orderId: orderId,
         productName: productName,
@@ -6656,12 +7155,10 @@ app.post('/api/upload-verify-image', upload.single('image'), async (req, res) =>
       console.log('✅ Verification result stored in session for:', cleanEmail);
       console.log('  Issue ID:', issueData.id);
       console.log('  Is Expiry Flow:', isExpiryFlow);
+      console.log('  product_verify:', session.product_verify);
       console.log('💾 Pending product verification stored, waiting for user to click Return to Chat');
       
-      // 🎯 AUTO-TRIGGER: Set flag to display results on next webhook call
-      session.autoDisplayVerification = true;
-      
-      console.log('📤 Verification complete - results will auto-display in chat');
+      console.log('⏳ Verification complete - waiting for user confirmation before displaying results');
       
     } catch (saveError) {
       console.error('⚠️ Error saving to Firestore:', saveError.message);
@@ -7127,100 +7624,3 @@ process.on('SIGINT', () => {
   console.log('\n👋 Shutting down webhook server...');
   process.exit(0);
 });
-
-/*
-===============================================
-🧪 CURL TEST COMMANDS
-===============================================
-
-1️⃣ HEALTH CHECK
-curl -X GET http://localhost:3000/
-
-2️⃣ CANCEL ORDER SELECTION (Simulate user clicking "Cancel Order")
-curl -X POST http://localhost:3000/webhook \
-  -H "Content-Type: application/json" \
-  -d '{
-    "handler": "message",
-    "operation": "message",
-    "visitor": {
-      "name": "Arjun",
-      "email": "arjunfree256@gmail.com"
-    },
-    "message": {
-      "text": "Cancel Order"
-    }
-  }'
-
-3️⃣ ORDER SELECTION (Simulate user clicking order button)
-curl -X POST http://localhost:3000/webhook \
-  -H "Content-Type: application/json" \
-  -d '{
-    "handler": "message",
-    "operation": "message",
-    "visitor": {
-      "name": "Arjun",
-      "email": "arjunfree256@gmail.com"
-    },
-    "message": {
-      "text": "Order ORD1765130519686 | Bluetooth Speaker | ₹3798"
-    }
-  }'
-
-4️⃣ FORM SUBMIT - CANCEL ORDER
-curl -X POST http://localhost:3000/salesiq/form-submit \
-  -H "Content-Type: application/json" \
-  -H "x-webhook-secret: your_shared_secret_here_change_in_production" \
-  -d '{
-    "order_id": "ORD1765130519686",
-    "user_id": "arjunfree256@gmail.com",
-    "action": "cancel",
-    "cancellation_reason": "Changed my mind",
-    "refund_method": "original_payment",
-    "idempotency_token": "cancel_1234567890_ORD1765130519686"
-  }'
-
-5️⃣ FORM SUBMIT - RETURN ORDER
-curl -X POST http://localhost:3000/salesiq/form-submit \
-  -H "Content-Type: application/json" \
-  -H "x-webhook-secret: your_shared_secret_here_change_in_production" \
-  -d '{
-    "order_id": "ORD1765130519686",
-    "user_id": "arjunfree256@gmail.com",
-    "action": "return",
-    "cancellation_reason": "Product defective",
-    "refund_method": "bank_transfer",
-    "bank_details": "Account: 1234567890, IFSC: HDFC0001234",
-    "idempotency_token": "return_1234567890_ORD1765130519686"
-  }'
-
-6️⃣ GET CANCELLABLE ORDERS (Flutter API)
-curl -X POST http://localhost:3000/api/get-cancellable-orders \
-  -H "Content-Type: application/json" \
-  -H "x-webhook-secret: your_shared_secret_here_change_in_production" \
-  -d '{
-    "customer_email": "arjunfree256@gmail.com"
-  }'
-
-7️⃣ RETURN ORDER SELECTION
-curl -X POST http://localhost:3000/webhook \
-  -H "Content-Type: application/json" \
-  -d '{
-    "handler": "message",
-    "operation": "message",
-    "visitor": {
-      "name": "Arjun",
-      "email": "arjunfree256@gmail.com"
-    },
-    "message": {
-      "text": "🔄 Return Order"
-    }
-  }'
-
-===============================================
-📝 NOTES:
-- Replace localhost:3000 with your actual server URL
-- Update x-webhook-secret header with your actual secret
-- Update order_id and customer_email with real values
-- For production, use HTTPS endpoints
-===============================================
-*/

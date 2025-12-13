@@ -57,3 +57,9 @@ yarn-error.log*
 
 # Vercel
 .vercel
+
+# Webhook uploads (user uploaded images)
+webhook/api/uploads/*.jpg
+webhook/api/uploads/*.jpeg
+webhook/api/uploads/*.png
+webhook/api/uploads/*.gif
