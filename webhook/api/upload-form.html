@@ -236,7 +236,9 @@
 
         <div class="info-box">
             <p><strong>Email:</strong> <span id="customerEmail">Loading...</span></p>
-            <p><strong>Order ID:</strong> <span id="orderId">Auto-detect</span></p>
+            <p><strong>Order ID:</strong> <span id="orderId">Loading...</span></p>
+            <p><strong>Product ID:</strong> <span id="productIdDisplay">Loading...</span></p>
+            <p><strong>Product Name:</strong> <span id="productNameDisplay">Loading...</span></p>
             <p><strong>How it works:</strong> Upload → AI Analysis → Instant Results</p>
         </div>
 
@@ -277,19 +279,140 @@
         for (const [key, value] of urlParams.entries()) {
             console.log(`  - ${key}: ${value}`);
         }
+
+        function decodeWeirdEncodedString(input) {
+            if (!input) return '';
+            let s = String(input);
+            s = s.replace(/%/g, '');
+            s = s.replace(/3A/g, ':');
+            s = s.replace(/2F/g, '/');
+            s = s.replace(/3F/g, '?');
+            s = s.replace(/3D/g, '=');
+            s = s.replace(/26/g, '&');
+            s = s.replace(/40/g, '@');
+            return s;
+        }
+
+        function looksMangled(v) {
+            if (!v) return false;
+            const s = String(v);
+            return s.includes('3A2F') || s.includes('2F') || s.includes('3F') || s.includes('3D') || s.includes('26');
+        }
+
+        let email = urlParams.get('email') || '';
+        let orderId = urlParams.get('orderId') || '';
+        let productId = urlParams.get('productId') || '';
+        let imageUrl = urlParams.get('imageUrl') || '';
+
+        console.log('📋 Initial parsed values:');
+        console.log('  email:', email);
+        console.log('  orderId:', orderId);
+        console.log('  productId:', productId);
+        console.log('  imageUrl:', imageUrl);
+
+        // Strategy 1: Recover from full URL with regex
+        const fullUrl = window.location.href;
+        if (!orderId || !productId) {
+            console.log('🔧 Strategy 1: Recovering from full URL with regex...');
+            const urlMatch = fullUrl.match(/[?&]email=([^&]+).*?orderId=([^&]+).*?productId=([^&]+).*?imageUrl=([^&]+)/);
+            if (urlMatch) {
+                email = email || decodeURIComponent(urlMatch[1]);
+                orderId = orderId || decodeURIComponent(urlMatch[2]);
+                productId = productId || decodeURIComponent(urlMatch[3]);
+                imageUrl = imageUrl || decodeURIComponent(urlMatch[4]);
+                console.log('  ✅ Recovered orderId:', orderId);
+                console.log('  ✅ Recovered productId:', productId);
+            }
+        }
         
-        const email = decodeURIComponent(urlParams.get('email') || 'arjunfree256@gmail.com');
-        const orderId = decodeURIComponent(urlParams.get('orderId') || 'ORD1765202457052');
-        const productId = decodeURIComponent(urlParams.get('productId') || '');
-        const imageUrl = decodeURIComponent(urlParams.get('imageUrl') || '');
+        // Strategy 2: Manual parsing of query string
+        if (!orderId || !productId) {
+            console.log('🔧 Strategy 2: Manual query string parsing...');
+            const queryString = window.location.search.substring(1);
+            const pairs = queryString.split('&');
+            for (const pair of pairs) {
+                const [key, value] = pair.split('=');
+                if (key === 'orderId' && value) orderId = orderId || decodeURIComponent(value);
+                if (key === 'productId' && value) productId = productId || decodeURIComponent(value);
+                if (key === 'email' && value) email = email || decodeURIComponent(value);
+                if (key === 'imageUrl' && value) imageUrl = imageUrl || decodeURIComponent(value);
+            }
+            console.log('  ✅ Manual parse orderId:', orderId);
+            console.log('  ✅ Manual parse productId:', productId);
+        }
+
+        // Strategy 3: Fetch session data from backend API (async, non-blocking)
+        (async function() {
+            // Always try to fetch session data if email is available
+            if (email) {
+                console.log('🔧 Strategy 3: Fetching session data from backend...');
+                try {
+                    const apiUrl = window.location.origin + '/api/get-product-session?email=' + encodeURIComponent(email);
+                    const response = await fetch(apiUrl);
+                    const data = await response.json();
+                    
+                    if (data.success) {
+                        orderId = data.orderId;
+                        productId = data.productId;
+                        imageUrl = data.imageUrl;
+                        const productName = data.productName;
+                        console.log('  ✅ Retrieved from session:');
+                        console.log('    orderId:', orderId);
+                        console.log('    productId:', productId);
+                        console.log('    imageUrl:', imageUrl);
+                        console.log('    productName:', productName);
+                        
+                        // Update display with actual values only
+                        document.getElementById('orderId').textContent = orderId;
+                        document.getElementById('productIdDisplay').textContent = productId;
+                        document.getElementById('productNameDisplay').textContent = productName;
+                    } else {
+                        console.log('  ⚠️ Session not found');
+                        document.getElementById('orderId').textContent = 'Not available';
+                        document.getElementById('productIdDisplay').textContent = 'Not available';
+                        document.getElementById('productNameDisplay').textContent = 'Not available';
+                    }
+                } catch (error) {
+                    console.error('  ❌ Error fetching session:', error);
+                    document.getElementById('orderId').textContent = 'Error';
+                    document.getElementById('productIdDisplay').textContent = 'Error';
+                    document.getElementById('productNameDisplay').textContent = 'Error';
+                }
+            } else {
+                // If no email, show error
+                document.getElementById('orderId').textContent = 'No email provided';
+                document.getElementById('productIdDisplay').textContent = 'No email provided';
+                document.getElementById('productNameDisplay').textContent = 'No email provided';
+            }
+        })();
+
+        // Recovery: sometimes SalesIQ mangles query params so email becomes like:
+        // "arjunfree2563A2Fvia.placeholder.com2FFF66003Ftext=Earbuds"
+        // In that case, recover email + imageUrl.
+        if (email && email.includes('3A2F') && !imageUrl) {
+            const prefix = email.split('3A2F')[0];
+            const remainder = email.split('3A2F').slice(1).join('3A2F');
+            const recoveredUrl = decodeWeirdEncodedString(remainder);
+            email = prefix + '@gmail.com';
+            imageUrl = recoveredUrl.startsWith('http') ? recoveredUrl : ('https://' + recoveredUrl);
+        }
+
+        // Only apply custom decode when values look mangled; otherwise keep as-is
+        if (looksMangled(email)) email = decodeWeirdEncodedString(email);
+        if (looksMangled(orderId)) orderId = decodeWeirdEncodedString(orderId);
+        if (looksMangled(productId)) productId = decodeWeirdEncodedString(productId);
+        if (looksMangled(imageUrl)) imageUrl = decodeWeirdEncodedString(imageUrl);
 
         console.log('📧 Email (final):', email);
         console.log('📦 Order ID (final):', orderId);
         console.log('🆔 Product ID (final):', productId);
         console.log('🖼️ Image URL (final):', imageUrl);
 
-        document.getElementById('customerEmail').textContent = email;
-        document.getElementById('orderId').textContent = orderId || 'Auto-detect';
+        // Update display elements - only show if values exist
+        document.getElementById('customerEmail').textContent = email || 'Loading...';
+        document.getElementById('orderId').textContent = 'Loading...';
+        document.getElementById('productIdDisplay').textContent = 'Loading...';
+        document.getElementById('productNameDisplay').textContent = 'Loading...';
 
         const cameraInput = document.getElementById('cameraInput');
         const cameraBtn = document.getElementById('cameraBtn');
@@ -349,9 +472,9 @@
             const formData = new FormData();
             formData.append('image', selectedFile);
             formData.append('email', email);
-            if (orderId) formData.append('orderId', orderId);
-            if (productId) formData.append('productId', productId);
-            if (imageUrl) formData.append('imageUrl', imageUrl);
+            formData.append('orderId', orderId);
+            formData.append('productId', productId);
+            formData.append('imageUrl', imageUrl);
 
             console.log('📤 Sending to API:');
             console.log('  - Email:', email);
